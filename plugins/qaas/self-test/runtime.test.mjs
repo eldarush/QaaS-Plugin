@@ -76,6 +76,7 @@ import {
 } from "../scripts/lib/process-runner.mjs";
 import { validateOwnHookConfiguration } from "../scripts/lib/runtime-attestation.mjs";
 import { validatePlugin } from "../scripts/validate-plugin.mjs";
+import { runDoctor } from "../scripts/doctor.mjs";
 import { checkContextBudget } from "../scripts/check-context-budget.mjs";
 import {
   createEvidenceEvent,
@@ -203,7 +204,15 @@ function taskPlanFixture({
     ],
     dependencies: [],
     commands: {
-      restore: [command("dotnet", ["restore", "Fixture.csproj", "--nologo"])],
+      restore: [
+        command("dotnet", [
+          "restore",
+          "Fixture.csproj",
+          "--configfile",
+          "NuGet.Config",
+          "--nologo",
+        ]),
+      ],
       build: [
         command("dotnet", [
           "build",
@@ -888,7 +897,7 @@ test("query approval binds digest and signature fields in exact tool input", () 
     toolName: "mcp__reportportal__read",
     toolInput,
     toolInputDigest: sha256(toolInput),
-    endpointSelector: "QAAS_REPORTPORTAL_URL",
+    endpointSelector: "http://127.0.0.1:4567/base/",
     purpose: "Read exact bounded launch evidence",
     credentialEnvNames: [],
     timeoutMs: 5_000,
@@ -920,6 +929,45 @@ test("query approval binds digest and signature fields in exact tool input", () 
       validateQueryPlan(mutant).valid,
       false,
       `${field} must remain bound by toolInputDigest`,
+    );
+  }
+  const multipleCredentials = structuredClone(plan);
+  multipleCredentials.queries[0].credentialEnvNames = [
+    "FIRST_TOKEN",
+    "SECOND_TOKEN",
+  ];
+  multipleCredentials.queries[0].queryDigest = querySpecDigest(
+    multipleCredentials.queries[0],
+  );
+  multipleCredentials.digest = canonicalDigest(multipleCredentials);
+  assert.equal(
+    validateQueryPlan(multipleCredentials).valid,
+    false,
+    "the fixed remote GET adapter accepts at most one bearer-token selector",
+  );
+  for (const relativeUrl of [
+    `api/results?X-Amz-Signature=${"a".repeat(64)}`,
+    `api/results?id=${"b3".repeat(32)}`,
+  ]) {
+    const credentialQuery = structuredClone(plan);
+    credentialQuery.queries[0].toolInput.relativeUrl = relativeUrl;
+    credentialQuery.queries[0].toolInputDigest = sha256(
+      credentialQuery.queries[0].toolInput,
+    );
+    credentialQuery.queries[0].queryDigest = querySpecDigest(
+      credentialQuery.queries[0],
+    );
+    credentialQuery.digest = canonicalDigest(credentialQuery);
+    const result = validateQueryPlan(credentialQuery);
+    assert.equal(
+      result.valid,
+      false,
+      "credential-like query parameters must be rejected before approval",
+    );
+    assert.ok(
+      result.errors.some((entry) =>
+        /credential-like query data/u.test(entry.message)
+      ),
     );
   }
 });
@@ -966,7 +1014,7 @@ test("query adapter rechecks endpoint identity, deep-redacts, and rejects invali
     toolName: "mcp__reportportal__read",
     toolInput,
     toolInputDigest: sha256(toolInput),
-    endpointSelector: "QAAS_REPORTPORTAL_URL",
+    endpointSelector: "http://127.0.0.1:4567/base/",
     purpose: "Read one exact bounded synthetic result",
     credentialEnvNames: ["RP_TOKEN"],
     timeoutMs: 5_000,
@@ -990,17 +1038,45 @@ test("query adapter rechecks endpoint identity, deep-redacts, and rejects invali
     ],
   };
   query.queryDigest = querySpecDigest(query);
-  const env = {
-    QAAS_REPORTPORTAL_URL: "http://127.0.0.1:4567/base/",
-    QAAS_REPORTPORTAL_CREDENTIAL_ENV: "RP_TOKEN",
-    RP_TOKEN: "low-entropy-test-value",
-  };
+  const env = { RP_TOKEN: "low-entropy-test-value" };
   const binding = attestQuery({
     query,
     registry,
     env,
     projectRoot: item.project,
   });
+  for (const relativeUrl of [
+    `api/results?X-Amz-Signature=${"c".repeat(64)}`,
+    `api/results?id=${"d4".repeat(32)}`,
+  ]) {
+    const credentialCapability = {
+      ...capability,
+      safeArgumentTemplate: {
+        method: "GET",
+        relativeUrl,
+      },
+    };
+    const credentialRegistry = {
+      ...registry,
+      capabilities: [credentialCapability],
+    };
+    const credentialQuery = {
+      ...query,
+      toolInput: { ...query.toolInput, relativeUrl },
+    };
+    credentialQuery.toolInputDigest = sha256(credentialQuery.toolInput);
+    credentialQuery.queryDigest = querySpecDigest(credentialQuery);
+    assert.throws(
+      () =>
+        attestQuery({
+          query: credentialQuery,
+          registry: credentialRegistry,
+          env,
+          projectRoot: item.project,
+        }),
+      /credential query parameters|secret-like query value/u,
+    );
+  }
   assert.equal(binding.adapterId, "qaas-internal-http-get-v1");
   assert.equal(
     binding.registeredPermissionContract.toolName,
@@ -1034,14 +1110,14 @@ test("query adapter rechecks endpoint identity, deep-redacts, and rejects invali
 
   await assert.rejects(
     executeQuery({
-      query,
+      query: {
+        ...query,
+        endpointSelector: "http://127.0.0.1:4568/other/",
+      },
       binding,
       registry,
       projectRoot: item.project,
-      env: {
-        ...env,
-        QAAS_REPORTPORTAL_URL: "http://127.0.0.1:4568/other/",
-      },
+      env,
       fetchImpl: async () => {
         fetchCalls += 1;
         throw new Error("fetch must not run after endpoint drift");
@@ -1755,6 +1831,33 @@ test("configured source provenance never persists query values", async (t) => {
   });
   assert.equal(result.provenance.identifier.includes("?"), false);
   assert.deepEqual(result.provenance.queryParameterNames, ["id"]);
+  const helperEvent = {
+    hook_event_name: "PreToolUse",
+    session_id: "source-query-session",
+    tool_name: "PowerShell",
+    tool_use_id: "source-query-read",
+    tool_input: {
+      command:
+        `node "\${CLAUDE_PLUGIN_ROOT}/scripts/source-read.mjs" ` +
+        `--session-handle ${"a".repeat(48)} --source modules ` +
+        `--base-url "http://127.0.0.1:${port}/" ` +
+        '--relative-url "items?ref=main&path=samples"',
+    },
+  };
+  const helperClassification = await classifyToolCall(
+    helperEvent,
+    hookEnvironment(helperEvent, {
+      env: {
+        CLAUDE_PROJECT_DIR: process.cwd(),
+        CLAUDE_PLUGIN_ROOT: pluginRoot,
+      },
+    }),
+  );
+  assert.equal(helperClassification.actionClass, "configured-source-read");
+  assert.match(
+    helperClassification.updatedInput.command,
+    /items\?ref=main&path=samples/u,
+  );
   const loopbackToken = ["loopback", "only", "test", "token"].join("-");
   const loopbackCredentialed = await readConfiguredSource({
     source: "modules",
@@ -1855,13 +1958,12 @@ test("source checkout is exact, one-use, bare, and readable only through bounds"
       env: item.env,
     })
   ).stdout.trim();
-  item.env.QAAS_REFERENCE_PROJECT_REPO_URL =
-    pathToFileURL(sourceRepository).toString();
+  const referenceRepositoryUrl = pathToFileURL(sourceRepository).toString();
   const untrustedGitHome = path.join(item.root, "untrusted-git-home");
   await mkdir(untrustedGitHome);
   await writeFile(
     path.join(untrustedGitHome, ".gitconfig"),
-    `[url "file:///definitely-missing/"]\n\tinsteadOf = ${item.env.QAAS_REFERENCE_PROJECT_REPO_URL}\n[http]\n\tsslVerify = false\n`,
+    `[url "file:///definitely-missing/"]\n\tinsteadOf = ${referenceRepositoryUrl}\n[http]\n\tsslVerify = false\n`,
     "utf8",
   );
   item.env.HOME = untrustedGitHome;
@@ -1880,7 +1982,7 @@ test("source checkout is exact, one-use, bare, and readable only through bounds"
     checkoutId: "style-reference",
     createdAt: new Date().toISOString(),
     source: "reference-project",
-    repositoryUrl: item.env.QAAS_REFERENCE_PROJECT_REPO_URL,
+    repositoryUrl: referenceRepositoryUrl,
     ref: "main",
     commit,
     transport: "git",
@@ -2054,6 +2156,175 @@ test("source checkout is exact, one-use, bare, and readable only through bounds"
     /approval is stale|already been consumed/u,
   );
   assert.deepEqual(await readdir(item.project), []);
+});
+
+test("user-supplied source GET is task-bound, reviewed, and one-use", async (t) => {
+  let authorization = null;
+  let requestCount = 0;
+  const server = http.createServer((request, response) => {
+    requestCount += 1;
+    authorization = request.headers.authorization ?? null;
+    response.writeHead(200, { "Content-Type": "text/plain" });
+    response.end("approved bounded source");
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => server.close());
+
+  const item = await fixture("qaas-source-read-");
+  item.env.REVIEWED_SOURCE_TOKEN = "source-read-test-credential";
+  const sessionId = "source-read-session";
+  const activated = await handleSessionEvent(
+    sessionEvent(sessionId, "/qaas:onboard"),
+    { env: item.env },
+  );
+  const handle = sessionHandleFrom(activated);
+  await runWorkflowAuthority(
+    ["discover", "--session-handle", handle],
+    item.env,
+  );
+  const baseUrl =
+    `http://127.0.0.1:${server.address().port}/approved-source/`;
+  const sourceArguments = [
+    "--source",
+    "modules",
+    "--base-url",
+    baseUrl,
+    "--credential-env",
+    "REVIEWED_SOURCE_TOKEN",
+    "--relative-url",
+    "catalog/item",
+    "--output-limit-bytes",
+    "4096",
+    "--timeout-ms",
+    "5000",
+  ];
+
+  await assert.rejects(
+    runSourceRead(sourceArguments, item.env),
+    /--session-handle/u,
+  );
+  await assert.rejects(
+    runSourceRead(
+      ["--session-handle", handle, ...sourceArguments],
+      item.env,
+    ),
+    /source-read-review|source-read review|Missing signed authority record/u,
+  );
+  const review = await runWorkflowAuthority(
+    [
+      "prepare",
+      "--session-handle",
+      handle,
+      "--kind",
+      "source-read",
+      ...sourceArguments,
+    ],
+    item.env,
+  );
+  const reviewDocument = JSON.parse(review.review.canonicalDocument);
+  assert.equal(reviewDocument.kind, "source-read");
+  assert.equal(reviewDocument.oneUse, true);
+  assert.equal(reviewDocument.request.baseUrl, baseUrl);
+  assert.equal(reviewDocument.request.relativeUrl, "catalog/item");
+  assert.equal(
+    reviewDocument.request.credentialEnv,
+    "REVIEWED_SOURCE_TOKEN",
+  );
+  const retryReview = await runWorkflowAuthority(
+    [
+      "prepare",
+      "--session-handle",
+      handle,
+      "--kind",
+      "source-read",
+      ...sourceArguments,
+    ],
+    item.env,
+  );
+  const sourceContext = await runtimeContext(item.env);
+  const supersededChallenge = await sourceContext.authority.readSigned(
+    `approval-challenges/${sha256(review.challengeId)}.json`,
+  );
+  assert.equal(supersededChallenge.payload.status, "superseded");
+  await approveQuestion({
+    env: item.env,
+    sessionId,
+    question: retryReview.question,
+    toolUseId: "approve-source-read",
+  });
+
+  const result = await runSourceRead(
+    ["--session-handle", handle, ...sourceArguments],
+    item.env,
+  );
+  assert.equal(result.excerpt, "approved bounded source");
+  assert.equal(result.approvalConsumed, true);
+  assert.equal(
+    authorization,
+    [["Bea", "rer"].join(""), "source-read-test-credential"].join(" "),
+  );
+  await assert.rejects(
+    runSourceRead(
+      ["--session-handle", handle, ...sourceArguments],
+      item.env,
+    ),
+    /approval is stale/u,
+  );
+  const secondReview = await runWorkflowAuthority(
+    [
+      "prepare",
+      "--session-handle",
+      handle,
+      "--kind",
+      "source-read",
+      ...sourceArguments,
+    ],
+    item.env,
+  );
+  await approveQuestion({
+    env: item.env,
+    sessionId,
+    question: secondReview.question,
+    toolUseId: "approve-source-read-again",
+  });
+  const replacementReview = await runWorkflowAuthority(
+    [
+      "prepare",
+      "--session-handle",
+      handle,
+      "--kind",
+      "source-read",
+      ...sourceArguments,
+    ],
+    item.env,
+  );
+  await approveQuestion({
+    env: item.env,
+    sessionId,
+    question: replacementReview.question,
+    toolUseId: "approve-source-read-replacement",
+  });
+  await assert.rejects(
+    runSourceRead(
+      [
+        "--session-handle",
+        handle,
+        ...sourceArguments.map((value) =>
+          value === "catalog/item" ? "catalog/other" : value
+        ),
+      ],
+      item.env,
+    ),
+    /approval is stale/u,
+  );
+  assert.equal(requestCount, 1);
+  const exactAfterMismatch = await runSourceRead(
+    ["--session-handle", handle, ...sourceArguments],
+    item.env,
+  );
+  assert.equal(exactAfterMismatch.excerpt, "approved bounded source");
+  assert.equal(requestCount, 2);
 });
 
 test("bounded Streamable HTTP MCP uses the exact live signed tool schema", async (t) => {
@@ -2445,6 +2716,87 @@ test("exact onboarding deterministically recovers BLOCKED and STALE state", asyn
   assert.equal(state.blocker, null);
 });
 
+test("bounded signed checkpoints survive compaction as a resumable projection", async () => {
+  const item = await fixture("qaas-resume-projection-");
+  const sessionId = "resume-projection-session";
+  const activated = await handleSessionEvent(
+    sessionEvent(sessionId, "/qaas:onboard"),
+    { env: item.env },
+  );
+  const handle = sessionHandleFrom(activated);
+  await runWorkflowAuthority(
+    ["discover", "--session-handle", handle],
+    item.env,
+  );
+  const checkpoint = {
+    completedWork: ["Mapped repository structure"],
+    remainingWork: ["Ask what the sample correlation field means"],
+    evidencePaths: [],
+    blocker: null,
+    nextLegalAction: "Ask one focused onboarding question",
+  };
+  const recorded = await runWorkflowAuthority(
+    [
+      "checkpoint",
+      "--session-handle",
+      handle,
+      "--content-base64",
+      base64Json(checkpoint),
+    ],
+    item.env,
+  );
+  assert.equal(recorded.projection.phase, "DISCOVERING");
+  assert.deepEqual(recorded.projection.authorityCapabilities, {
+    writeContentBinding: false,
+  });
+  assert.deepEqual(recorded.projection.completedWork, checkpoint.completedWork);
+  assert.deepEqual(recorded.projection.remainingWork, checkpoint.remainingWork);
+  assert.equal(
+    recorded.projection.nextLegalAction,
+    checkpoint.nextLegalAction,
+  );
+  assert.match(recorded.projection.digest, /^[a-f0-9]{64}$/u);
+  assert.equal(recorded.signedProjection.payload.sequence, 0);
+
+  const resumed = await runWorkflowAuthority(
+    ["resume", "--session-handle", handle],
+    item.env,
+  );
+  assert.equal(
+    resumed.projection.stateSequence,
+    recorded.projection.stateSequence,
+  );
+  assert.deepEqual(
+    resumed.projection.remainingWork,
+    checkpoint.remainingWork,
+  );
+  assert.equal(
+    resumed.projection.authorityCapabilities.writeContentBinding,
+    false,
+  );
+  assert.equal(resumed.signedProjection.payload.sequence, 1);
+
+  await assert.rejects(
+    runWorkflowAuthority(
+      [
+        "checkpoint",
+        "--session-handle",
+        handle,
+        "--content-base64",
+        base64Json({
+          ...checkpoint,
+          remainingWork: Array.from(
+            { length: 13 },
+            (_, index) => `item-${index}`,
+          ),
+        }),
+      ],
+      item.env,
+    ),
+    /at most 12 entries/u,
+  );
+});
+
 test(
   "validator and doctor operate from a plugin-only installed cache",
   { timeout: 60_000 },
@@ -2457,7 +2809,7 @@ test(
       "cache",
       "qaas-plugin",
       "qaas",
-      "0.1.0",
+      "0.2.0",
     );
     await mkdir(path.dirname(installedPluginRoot), { recursive: true });
     await cp(pluginRoot, installedPluginRoot, { recursive: true });
@@ -2492,7 +2844,7 @@ test(
     assert.equal(validation.sourceRepositoryChecksApplied, false);
     assert.equal(validation.repositoryRoot, null);
     assert.equal(validation.pluginRoot, installedPluginRoot);
-    assert.equal(validation.version, "0.1.0");
+    assert.equal(validation.version, "0.2.0");
 
     const projectRoot = path.join(root, "project");
     await mkdir(projectRoot);
@@ -2507,7 +2859,6 @@ test(
         CLAUDE_PLUGIN_ROOT: installedPluginRoot,
         CLAUDE_PROJECT_DIR: projectRoot,
         CLAUDE_PLUGIN_DATA: path.join(root, "plugin-data"),
-        QAAS_TRUSTED_NODE24: process.execPath,
       },
       projectRoot,
       pluginRoot: installedPluginRoot,
@@ -2517,8 +2868,8 @@ test(
     assert.equal(doctor.plugin.pluginRoot, installedPluginRoot);
     assert.equal(doctor.contextBudget.valid, true);
     assert.equal(doctor.hooks.own.valid, true);
-    assert.equal(doctor.hookShell.actualProcessProbe, true);
-    assert.equal(doctor.hookShell.available, true, doctor.hookShell.error);
+    assert.equal(doctor.hookRuntime.available, true);
+    assert.equal(doctor.hookRuntime.shellRequired, false);
   },
 );
 
@@ -2602,7 +2953,7 @@ test("hook inventory includes target events and ConfigChange skills", async () =
   assert.ok(hooks.hooks.PostCompact);
   assert.ok(hooks.hooks.PostToolUseFailure);
   const launcher = await readFile(
-    path.join(pluginRoot, "scripts", "hook-launcher.sh"),
+    path.join(pluginRoot, "scripts", "hook-launcher.mjs"),
   );
   assert.equal(launcher.includes(0x0d), false);
   const possibleSourceRoot = path.resolve(pluginRoot, "..", "..");
@@ -2618,17 +2969,7 @@ test("hook inventory includes target events and ConfigChange skills", async () =
   }
 });
 
-test("hook launcher maps every launcher and Node failure to exit 2", async (t) => {
-  const shell =
-    process.platform === "win32"
-      ? "C:\\Program Files\\Git\\usr\\bin\\sh.exe"
-      : "/bin/sh";
-  try {
-    await access(shell);
-  } catch {
-    t.skip("the mandatory target hook shell is unavailable");
-    return;
-  }
+test("hook launcher maps every launcher and child failure to exit 2", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "qaas-launcher-fail-"));
   const scripts = path.join(root, "scripts");
   const project = path.join(root, "project");
@@ -2636,9 +2977,9 @@ test("hook launcher maps every launcher and Node failure to exit 2", async (t) =
   await mkdir(scripts);
   await mkdir(project);
   await mkdir(pluginData);
-  const launcher = path.join(scripts, "hook-launcher.sh");
+  const launcher = path.join(scripts, "hook-launcher.mjs");
   const pretool = path.join(scripts, "pretool-safety.mjs");
-  await cp(path.join(pluginRoot, "scripts", "hook-launcher.sh"), launcher);
+  await cp(path.join(pluginRoot, "scripts", "hook-launcher.mjs"), launcher);
   await writeFile(
     pretool,
     'process.stderr.write("synthetic Node hook failure\\n"); process.exit(7);\n',
@@ -2648,7 +2989,6 @@ test("hook launcher maps every launcher and Node failure to exit 2", async (t) =
     ...process.env,
     CLAUDE_PROJECT_DIR: project,
     CLAUDE_PLUGIN_DATA: pluginData,
-    QAAS_TRUSTED_NODE24: process.execPath,
   };
   const cases = [
     { label: "missing argument", args: [launcher] },
@@ -2677,7 +3017,7 @@ test("hook launcher maps every launcher and Node failure to exit 2", async (t) =
     { label: "Node hook process failure", args: [launcher, pretool] },
   ];
   for (const scenario of cases) {
-    const result = await spawnObserved(shell, scenario.args, {
+    const result = await spawnObserved(process.execPath, scenario.args, {
       cwd: project,
       env,
     });
@@ -2690,18 +3030,8 @@ test("hook launcher maps every launcher and Node failure to exit 2", async (t) =
   }
 });
 
-test("fixed hook launcher ignores project-local Node PATH shadows", async (t) => {
+test("doctor denies project-local Node PATH shadows", async () => {
   const item = await fixture("qaas-launcher-shadow-");
-  const shell =
-    process.platform === "win32"
-      ? "C:\\Program Files\\Git\\usr\\bin\\sh.exe"
-      : "/bin/sh";
-  try {
-    await access(shell);
-  } catch {
-    t.skip("the target Claude hook shell is unavailable");
-    return;
-  }
   const shadow = path.join(item.project, "node");
   await writeFile(shadow, "#!/bin/sh\nexit 99\n", "utf8");
   await chmod(shadow, 0o755);
@@ -2712,45 +3042,20 @@ test("fixed hook launcher ignores project-local Node PATH shadows", async (t) =>
       "utf8",
     );
   }
-  const hooks = JSON.parse(
-    await readFile(path.join(pluginRoot, "hooks", "hooks.json"), "utf8"),
-  );
-  const command = hooks.hooks.PreToolUse[0].hooks[0].command.replaceAll(
-    "${CLAUDE_PLUGIN_ROOT}",
+  const doctor = await runDoctor({
+    projectRoot: item.project,
     pluginRoot,
-  );
-  const child = spawn(shell, ["-c", command], {
-    cwd: item.project,
     env: {
       ...item.env,
       PATH: `${item.project}${path.delimiter}${item.env.PATH ?? ""}`,
-      QAAS_TRUSTED_NODE24: process.execPath,
     },
-    windowsHide: true,
-    stdio: ["pipe", "pipe", "pipe"],
   });
-  const stdout = [];
-  const stderr = [];
-  child.stdout.on("data", (chunk) => stdout.push(chunk));
-  child.stderr.on("data", (chunk) => stderr.push(chunk));
-  child.stdin.end(
-    JSON.stringify({
-      hook_event_name: "PreToolUse",
-      session_id: "launcher-session",
-      tool_name: "Read",
-      tool_use_id: "launcher-read",
-      tool_input: { file_path: path.join(item.project, "missing.txt") },
-    }),
-  );
-  const [exitCode] = await once(child, "close");
-  assert.equal(
-    exitCode,
-    0,
-    Buffer.concat(stderr).toString("utf8"),
-  );
-  assert.deepEqual(
-    JSON.parse(Buffer.concat(stdout).toString("utf8")),
-    {},
+  assert.equal(doctor.projectNodePathShadow, true);
+  assert.equal(doctor.hookRuntime.available, false);
+  assert.ok(
+    doctor.blocking.some((entry) =>
+      /project-controlled Node PATH shadow/u.test(entry)
+    ),
   );
 });
 
@@ -2799,6 +3104,11 @@ else
     System.IO.File.WriteAllText("allure-results/report.json", "{\\"passed\\":true}");
     System.Console.WriteLine("qaas-self-test-ok");
 }`,
+    "utf8",
+  );
+  await writeFile(
+    path.join(item.project, "NuGet.Config"),
+    '<?xml version="1.0" encoding="utf-8"?><configuration><packageSources><clear /></packageSources></configuration>',
     "utf8",
   );
   const readinessInputDirectory = path.join(
@@ -3142,7 +3452,13 @@ else
     csharpClosure: csharpClosureFixture(),
     commands: {
       restore: [
-        command("dotnet", ["restore", "SelfTest.csproj", "--nologo"]),
+        command("dotnet", [
+          "restore",
+          "SelfTest.csproj",
+          "--configfile",
+          "NuGet.Config",
+          "--nologo",
+        ]),
       ],
       build: [
         command("dotnet", [

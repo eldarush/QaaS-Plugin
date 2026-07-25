@@ -138,18 +138,20 @@ in the plan.
 
 ## Documentation and integrations
 
-The docs resolver prefers an approved read-only MCP documentation source,
-followed by configured local ZIM/URL sources. It records source identity, page,
-artifact/commit digest when available, excerpt digest, applicable package
-snapshot, and compatibility decision.
+The docs resolver prefers an approved read-only MCP documentation source or
+administrator-provisioned local ZIM, then the immutable distribution-built
+documentation endpoint. There is no per-project or runtime docs URL. It records
+source identity, page, artifact/commit digest when available, excerpt digest,
+applicable package snapshot, and compatibility decision.
 
 External repository and artifact reads use capability descriptors rather than
-assuming a tool exists. An existing checkout is preferred, then an approved
-MCP, `glab`, local `git`, and `curl`. Outputs are bounded and redacted. If
+assuming a tool exists. Existing local content is preferred. A user-supplied
+GitLab, modules, or Common Hooks URL is reachable only through a signed,
+task/session-bound, one-use GET review with bounded redacted output. If
 repository semantics are required during discovery, a separate signed one-use
-transaction may create an immutable protected bare checkout for the configured
-modules, Common Hooks, or reference-project source. Only bounded inventory and
-single-file reads can expose its content.
+transaction may create an immutable protected bare checkout for the exact
+reviewed modules, Common Hooks, or reference-project source. Only bounded
+inventory and single-file reads can expose its content.
 
 No changing QaaS fact belongs in the stable workflow prompt. A fact that cannot
 be proven from current documentation and installed/available packages is an
@@ -157,7 +159,7 @@ unknown, not a generated answer.
 
 The observability query surface is hidden rather than a seventh lifecycle
 command. A query plan binds the exact execution digest, current fingerprint,
-capability ID, tool and bounded input, configured endpoint selector,
+capability ID, tool and bounded input, exact non-secret endpoint or local selector,
 credential-variable names, limits, purpose, typed response checks, and
 canonical digests. Authority consumes its approval once. An absent, stale,
 opaque, or unproven read-only connector blocks access instead of permitting a
@@ -195,7 +197,7 @@ and authorization consumption. One authorization cannot be replayed.
 ## Compatibility
 
 The public scripts use only Node.js built-ins. Skill frontmatter avoids a
-redundant `name` field for Claude Code 2.1.201 namespace compatibility. The
+redundant `name` field for Claude Code >=2.1.180 namespace compatibility. The
 plugin does not rely on later agent-team APIs. Windows paths and PowerShell are
 first-class; path canonicalization and CI also cover Linux.
 

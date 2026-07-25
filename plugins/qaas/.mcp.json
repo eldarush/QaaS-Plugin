@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "qaas_local": {
+      "command": "node",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/scripts/local-encode-mcp.mjs"
+      ],
+      "cwd": "${CLAUDE_PLUGIN_ROOT}"
+    }
+  }
+}

@@ -33,6 +33,7 @@
         "mutation",
         "capabilities",
         "source-checkout",
+        "source-read",
         "readiness-fact",
         "query",
         "lease-takeover"
@@ -45,6 +46,13 @@
     "questionId": { "type": "string", "minLength": 1 },
     "source": { "enum": ["AskUserQuestion", "direct-command-helper"] },
     "decision": { "const": "Approve" },
+    "status": {
+      "enum": ["active", "consumed", "superseded"]
+    },
+    "consumedAt": { "type": "string", "format": "date-time" },
+    "consumedReason": { "type": "string", "minLength": 1, "maxLength": 240 },
+    "supersededAt": { "type": "string", "format": "date-time" },
+    "supersededReason": { "type": "string", "minLength": 1, "maxLength": 240 },
     "timestamp": { "type": "string", "format": "date-time" },
     "sequence": { "type": "integer", "minimum": 0 }
     ,

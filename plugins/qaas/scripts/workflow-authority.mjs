@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { mkdir, readFile, realpath, stat } from "node:fs/promises";
+import { mkdir, open, readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -7,6 +7,7 @@ import {
   createApprovalChallenge,
   findApprovalByDigest,
   openAuthority,
+  supersedeApprovals,
   supersedeApprovalChallenges,
 } from "./lib/approval-authority.mjs";
 import {
@@ -66,12 +67,31 @@ import { describeMcpTransport } from "./lib/streamable-mcp-client.mjs";
 import {
   validateSourceCheckout,
 } from "./lib/source-checkout-validation.mjs";
+import { resolveSourceReadRequest } from "./lib/source-read-request.mjs";
 import { discoverProgram } from "./lib/process-runner.mjs";
 
-const PLUGIN_VERSION = "0.1.0";
+const PLUGIN_VERSION = "0.2.0";
 const MAX_ARTIFACT_BYTES = 1024 * 1024;
 const MAX_REVIEW_BYTES = 64 * 1024;
 const MAX_HUMAN_REVIEW_BYTES = 24 * 1024;
+const MAX_RESUME_BYTES = 32 * 1024;
+const MAX_RESUME_ITEMS = 12;
+const MAX_RECENT_EVIDENCE_HANDLES = 8;
+const MAX_EVIDENCE_TAIL_BYTES = 512 * 1024;
+const AUTHORITY_CAPABILITIES = Object.freeze({
+  writeContentBinding: false,
+});
+const SOURCE_READ_PHASES = new Set([
+  "DISCOVERING",
+  "CONTEXT_REVIEW",
+  "PROJECT_READY",
+  "TASK_DISCOVERY",
+  "PLAN_REVIEW",
+  "PLAN_APPROVED",
+  "IMPLEMENTING",
+  "DIAGNOSING",
+  "REPAIRING",
+]);
 const CONTEXT_PATHS = new Set([
   ".claude/CLAUDE.md",
   ".claude/qaas/context-index.json",
@@ -155,6 +175,351 @@ function safeTaskId(value) {
     throw new Error("task ID must contain only letters, digits, dot, underscore, or hyphen");
   }
   return value;
+}
+
+function boundedText(value, maxLength = 512) {
+  if (value === null || value === undefined) return null;
+  const text = String(value);
+  return text.length <= maxLength
+    ? text
+    : `${text.slice(0, Math.max(0, maxLength - 14))} [truncated]`;
+}
+
+function boundedStringList(value, label, {
+  maxItems = MAX_RESUME_ITEMS,
+  maxLength = 240,
+  allowEmpty = true,
+} = {}) {
+  if (!Array.isArray(value)) {
+    throw new Error(`${label} must be an array`);
+  }
+  if (value.length > maxItems) {
+    throw new Error(`${label} must contain at most ${maxItems} entries`);
+  }
+  return value.map((entry, index) => {
+    if (
+      typeof entry !== "string" ||
+      (!allowEmpty && entry.trim() === "") ||
+      entry.length > maxLength ||
+      entry.includes("\0")
+    ) {
+      throw new Error(
+        `${label}[${index}] must contain at most ${maxLength} safe characters`,
+      );
+    }
+    return entry;
+  });
+}
+
+function currentFingerprintHandle(state) {
+  for (const stage of [
+    "staticVerificationFingerprint",
+    "expectedWorkingFingerprint",
+    "onboardingFingerprint",
+  ]) {
+    const value = state?.fingerprints?.[stage];
+    const digest = typeof value === "string" ? value : value?.digest;
+    if (isSha256(digest)) return { stage, digest };
+  }
+  return null;
+}
+
+async function readTailLines(target, maxBytes = MAX_EVIDENCE_TAIL_BYTES) {
+  let handle;
+  try {
+    handle = await open(target, "r");
+    const info = await handle.stat();
+    const length = Math.min(info.size, maxBytes);
+    const start = Math.max(0, info.size - length);
+    const buffer = Buffer.alloc(length);
+    await handle.read(buffer, 0, length, start);
+    const lines = buffer
+      .toString("utf8")
+      .split(/\r?\n/u)
+      .filter(Boolean);
+    if (start > 0) lines.shift();
+    return { lines, truncated: start > 0 };
+  } catch (error) {
+    if (error?.code === "ENOENT") return { lines: [], truncated: false };
+    throw error;
+  } finally {
+    await handle?.close();
+  }
+}
+
+async function recentEvidenceHandles(authority) {
+  const tail = await readTailLines(
+    authority.resolveProtectedPath("evidence/events.jsonl"),
+  );
+  const handles = [];
+  for (const line of tail.lines.reverse()) {
+    let wrapped;
+    try {
+      wrapped = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const event = wrapped?.type === "evidence" ? wrapped.data : null;
+    if (
+      event?.status !== "success" ||
+      !["ordinary-read", "configured-source-read"].includes(event.actionClass) ||
+      !["project", "docs", "runtime"].includes(
+        event.details?.provenance?.category,
+      ) ||
+      event.details?.provenance?.immutableLocator !== true ||
+      !isSha256(event.digest)
+    ) {
+      continue;
+    }
+    const signed = await authority.readSigned(
+      `evidence/records/${event.digest}.json`,
+      { required: false },
+    );
+    if (
+      !signed ||
+      !safeEqualHex(signed.payload.event?.digest, event.digest) ||
+      signed.payload.event?.status !== "success"
+    ) {
+      continue;
+    }
+    handles.push({
+      digest: event.digest,
+      actionClass: event.actionClass,
+      sourceKind: event.details?.provenance?.category ?? "project",
+      tool: boundedText(event.tool, 80),
+      timestamp: event.timestamp,
+      paths: Array.isArray(event.paths)
+        ? event.paths.slice(0, 4).map((entry) => boundedText(entry, 240))
+        : [],
+    });
+    if (handles.length === MAX_RECENT_EVIDENCE_HANDLES) break;
+  }
+  return {
+    handles,
+    truncated:
+      tail.truncated ||
+      tail.lines.length > MAX_RECENT_EVIDENCE_HANDLES,
+  };
+}
+
+async function stagedResumeSummary(authority) {
+  const topics = await authority.readSigned("staging/context.json", {
+    required: false,
+  });
+  const stagedArtifacts = [];
+  for (const kind of [
+    "readiness",
+    "plan",
+    "execution",
+    "mutation",
+    "query",
+    "source-checkout",
+  ]) {
+    const record = await authority.readSigned(`artifacts/${kind}.json`, {
+      required: false,
+    });
+    if (record) {
+      stagedArtifacts.push({
+        kind,
+        digest: record.payload.digest,
+        stagedAt: record.payload.stagedAt ?? null,
+      });
+    }
+  }
+  const topicEntries = Object.entries(topics?.payload.files ?? {})
+    .filter(([entry]) => entry.startsWith(".claude/qaas/"))
+    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+  return {
+    stagedArtifacts,
+    stagedTopics: topicEntries.slice(0, 24).map(([entry, record]) => ({
+      path: entry,
+      sha256: record.sha256,
+    })),
+    stagedTopicsTruncated: topicEntries.length > 24,
+  };
+}
+
+async function pendingResumeAction(authority, sessionId) {
+  const record = await authority.readSigned(
+    `sessions/${sha256(sessionId)}/pending-action.json`,
+    { required: false },
+  );
+  if (!record) return null;
+  const pending = record.payload;
+  const challenge = await authority.readSigned(
+    `approval-challenges/${sha256(pending.challengeId)}.json`,
+    { required: false },
+  );
+  if (
+    !challenge ||
+    challenge.payload.sessionId !== sessionId ||
+    !["pending", "asked"].includes(challenge.payload.status) ||
+    Date.parse(challenge.payload.expiresAt) <= Date.now() ||
+    !safeEqualHex(challenge.payload.questionDigest, sha256(pending.question))
+  ) {
+    return null;
+  }
+  return {
+    type: "AskUserQuestion",
+    challengeId: pending.challengeId,
+    kind: pending.kind,
+    objectId: pending.objectId,
+    status: challenge.payload.status,
+    expiresAt: challenge.payload.expiresAt,
+    question: pending.question,
+  };
+}
+
+async function createResumeProjection(context, active) {
+  const live = (await context.authority.readSigned("state/current.json")).payload;
+  const [evidence, staged, pendingAction] = await Promise.all([
+    recentEvidenceHandles(context.authority),
+    stagedResumeSummary(context.authority),
+    pendingResumeAction(
+      context.authority,
+      active.attestation.sessionId,
+    ),
+  ]);
+  const projection = {
+    schemaVersion: "1.0",
+    projectId: context.authority.projectId,
+    phase: live.phase,
+    stateSequence: live.sequence,
+    taskId: live.taskId,
+    contextDigest: live.contextDigest ?? null,
+    packageSnapshotDigest: live.packageSnapshotDigest ?? null,
+    projectFingerprint: currentFingerprintHandle(live),
+    authorityCapabilities: AUTHORITY_CAPABILITIES,
+    approvedKinds: Object.keys(live.approvedDigests ?? {}).sort(),
+    completedWork: (live.completedWork ?? [])
+      .slice(-MAX_RESUME_ITEMS)
+      .map((entry) => boundedText(entry, 240)),
+    remainingWork: (live.remainingWork ?? [])
+      .slice(0, MAX_RESUME_ITEMS)
+      .map((entry) => boundedText(entry, 240)),
+    evidencePaths: (live.evidencePaths ?? [])
+      .slice(-MAX_RESUME_ITEMS)
+      .map((entry) => boundedText(entry, 240)),
+    blocker: boundedText(live.blocker, 512),
+    nextLegalAction: boundedText(live.nextLegalAction, 512),
+    recentEvidenceHandles: evidence.handles,
+    recentEvidenceHandlesTruncated: evidence.truncated,
+    stagedArtifacts: staged.stagedArtifacts,
+    stagedTopics: staged.stagedTopics,
+    stagedTopicsTruncated: staged.stagedTopicsTruncated,
+    pendingAction,
+    createdAt: new Date().toISOString(),
+  };
+  assertNoSecrets(projection, "resume projection");
+  projection.digest = canonicalDigest(projection);
+  if (Buffer.byteLength(canonicalJson(projection), "utf8") > MAX_RESUME_BYTES) {
+    throw new Error(`Resume projection exceeds ${MAX_RESUME_BYTES} bytes`);
+  }
+  const relative =
+    `sessions/${sha256(active.attestation.sessionId)}/resume-projection.json`;
+  const prior = await context.authority.readSigned(relative, {
+    required: false,
+  });
+  const payload = {
+    ...projection,
+    sequence: (prior?.payload.sequence ?? -1) + 1,
+  };
+  await context.authority.writeSigned(relative, payload, {
+    expectedSequence: prior?.payload.sequence ?? -1,
+  });
+  const signed = await context.authority.readSigned(relative);
+  return {
+    projection: signed.payload,
+    signedProjection: signed.envelope,
+  };
+}
+
+async function checkpointProgress(context, active, args) {
+  const content = decodeBase64(args["content-base64"]);
+  assertNoSecrets(content, "progress checkpoint");
+  let document;
+  try {
+    document = JSON.parse(content);
+  } catch (error) {
+    throw new Error(`Progress checkpoint is invalid JSON: ${error.message}`);
+  }
+  const allowed = new Set([
+    "completedWork",
+    "remainingWork",
+    "evidencePaths",
+    "blocker",
+    "nextLegalAction",
+  ]);
+  if (
+    !document ||
+    typeof document !== "object" ||
+    Array.isArray(document) ||
+    Object.keys(document).some((key) => !allowed.has(key))
+  ) {
+    throw new Error("Progress checkpoint has unsupported fields");
+  }
+  const completedWork = boundedStringList(
+    document.completedWork ?? active.state.completedWork ?? [],
+    "completedWork",
+  );
+  const remainingWork = boundedStringList(
+    document.remainingWork ?? active.state.remainingWork ?? [],
+    "remainingWork",
+  );
+  const evidencePaths = boundedStringList(
+    document.evidencePaths ?? active.state.evidencePaths ?? [],
+    "evidencePaths",
+  );
+  for (const entry of evidencePaths) {
+    const normalized = entry.replaceAll("\\", "/");
+    if (
+      path.posix.isAbsolute(normalized) ||
+      /^[A-Za-z]:/u.test(normalized) ||
+      normalized.split("/").includes("..")
+    ) {
+      throw new Error(`evidencePaths contains an unsafe path: ${entry}`);
+    }
+  }
+  const blocker =
+    document.blocker === undefined
+      ? active.state.blocker
+      : document.blocker;
+  if (
+    blocker !== null &&
+    (typeof blocker !== "string" ||
+      blocker.length > 512 ||
+      blocker.includes("\0"))
+  ) {
+    throw new Error("blocker must be null or at most 512 safe characters");
+  }
+  const nextLegalAction =
+    document.nextLegalAction ?? active.state.nextLegalAction;
+  if (
+    typeof nextLegalAction !== "string" ||
+    nextLegalAction.trim() === "" ||
+    nextLegalAction.length > 512 ||
+    nextLegalAction.includes("\0")
+  ) {
+    throw new Error("nextLegalAction must contain 1-512 safe characters");
+  }
+  const next = await commitCheckpoint(
+    context.authority,
+    active.state,
+    {
+      completedWork,
+      remainingWork,
+      evidencePaths,
+      blocker,
+      nextLegalAction,
+    },
+    { reason: "Recorded bounded model progress before compaction or handoff" },
+  );
+  await mirrorProjectState(
+    context.projectRoot,
+    next,
+    "Recorded bounded progress checkpoint",
+  );
+  return createResumeProjection(context, { ...active, state: next });
 }
 
 export async function runtimeContext(env) {
@@ -398,16 +763,35 @@ async function finalizeContextBundle(context, active) {
       sha256: files[entry].sha256,
     };
   });
-  const block = [
-    "<!-- QAAS:START -->",
-    "# QaaS project context",
+  const routerTemplatePath = path.join(
+    context.pluginRoot,
+    "templates",
+    "project-context",
+    ".claude",
+    "CLAUDE.md",
+  );
+  const routerTemplate = await readFile(routerTemplatePath, "utf8");
+  if (
+    !routerTemplate.startsWith("<!-- QAAS:START -->") ||
+    !routerTemplate.trimEnd().endsWith("<!-- QAAS:END -->")
+  ) {
+    throw new Error("Shipped CLAUDE router template has invalid managed markers");
+  }
+  const indexedTopics = [
     "",
-    "This managed index is generated from the exact reviewed context bundle.",
+    "## Indexed project topics",
     "",
-    ...topics.map((topic) => `- [${topic.title}](${topic.path}) — ${topic.purpose}`),
-    "<!-- QAAS:END -->",
+    "Load one topic for the current decision; return to the index before loading another.",
+    "",
+    ...topics.map(
+      (topic) => `- [${topic.title}](${topic.path}) — ${topic.purpose}`,
+    ),
     "",
   ].join("\n");
+  const block = routerTemplate.replace(
+    "<!-- QAAS:END -->",
+    `${indexedTopics}<!-- QAAS:END -->`,
+  );
   assertNoSecrets(block, "generated managed CLAUDE block");
   files[".claude/CLAUDE.md"] = {
     content: block,
@@ -686,14 +1070,9 @@ async function verifyReadinessAuthority(context, active, document) {
         }
       }
     } else if (source.kind === "docs") {
-      const allowedConfigurationNames = new Set([
-        "QAAS_GITLAB_URL",
-        "QAAS_ARTIFACTORY_URL",
-        "QAAS_NUGET_FEED_URL",
-        "QAAS_MODULES_REPO_URL",
-        "QAAS_COMMON_HOOKS_REPO_URL",
-        ...QAAS_DOCS_CONFIGURATION_NAMES,
-      ]);
+      const allowedConfigurationNames = new Set(
+        QAAS_DOCS_CONFIGURATION_NAMES,
+      );
       if (
         event.actionClass !== "configured-source-read" ||
         !Array.isArray(provenance.configurationNames) ||
@@ -723,6 +1102,30 @@ async function verifyReadinessAuthority(context, active, document) {
           context.env,
         );
       } else {
+        const expectedEndpointKinds = {
+          gitlab: "reviewed-project-input",
+          artifactory: "distribution-built-in",
+          nuget: "project-package-metadata",
+          modules: "reviewed-project-input",
+          "common-hooks": "reviewed-project-input",
+        };
+        const endpointConfiguration = provenance.endpointConfiguration;
+        if (
+          !Object.hasOwn(expectedEndpointKinds, provenance.source) ||
+          provenance.configurationNames.length !== 0 ||
+          !safeEqualHex(provenance.configurationDigest, sha256({})) ||
+          !isSha256(provenance.reviewedInputDigest) ||
+          endpointConfiguration?.source !== provenance.source ||
+          !isSha256(endpointConfiguration?.endpointDigest) ||
+          canonicalDigest(endpointConfiguration?.endpoint) !==
+            endpointConfiguration.endpointDigest ||
+          endpointConfiguration.endpoint?.kind !==
+            expectedEndpointKinds[provenance.source]
+        ) {
+          throw new Error(
+            "Configured-source evidence lacks an exact built-in or reviewed endpoint binding",
+          );
+        }
         const currentConfigurationDigest = sha256(
           Object.fromEntries(
             provenance.configurationNames.map((name) => [
@@ -810,8 +1213,7 @@ async function stageArtifact(context, active, args) {
     ["plan", "execution", "mutation", "query", "source-checkout"].includes(kind) &&
     document &&
     typeof document === "object" &&
-    !Array.isArray(document) &&
-    document.digest === undefined
+    !Array.isArray(document)
   ) {
     document.digest = canonicalDigest(document);
   }
@@ -928,6 +1330,7 @@ async function createChallenge(context, active, {
     mutation: "QaaS Mutate",
     capabilities: "QaaS Tools",
     "source-checkout": "QaaS Source",
+    "source-read": "QaaS Read",
     "readiness-fact": "QaaS Fact",
     query: "QaaS Query",
   };
@@ -951,6 +1354,11 @@ async function createChallenge(context, active, {
     options: APPROVAL_DECISION_OPTIONS,
     multiSelect: false,
   };
+  await supersedeApprovalChallenges(context.authority, {
+    kind,
+    sessionId: active.attestation.sessionId,
+    reason: `A fresh exact ${kind} review replaced the pending review`,
+  });
   const challenge = await createApprovalChallenge(context.authority, {
     challengeId: randomBytes(24).toString("hex"),
     kind,
@@ -963,6 +1371,31 @@ async function createChallenge(context, active, {
     multiSelect: question.multiSelect,
     expiresAt: new Date(Date.now() + 8 * 60 * 1000).toISOString(),
     leaseId: reviewLease.leaseId,
+  });
+  const pendingPath =
+    `sessions/${sha256(active.attestation.sessionId)}/pending-action.json`;
+  const priorPending = await context.authority.readSigned(pendingPath, {
+    required: false,
+  });
+  const pending = {
+    schemaVersion: "1.0",
+    projectId: context.authority.projectId,
+    challengeId: challenge.challengeId,
+    kind,
+    objectId,
+    approvalDigest,
+    question,
+    expiresAt: challenge.expiresAt,
+    stateSequence: active.state.sequence,
+    createdAt: new Date().toISOString(),
+    sequence: (priorPending?.payload.sequence ?? -1) + 1,
+  };
+  assertNoSecrets(pending, "pending resume action");
+  if (Buffer.byteLength(canonicalJson(pending), "utf8") > MAX_RESUME_BYTES) {
+    throw new Error(`Pending resume action exceeds ${MAX_RESUME_BYTES} bytes`);
+  }
+  await context.authority.writeSigned(pendingPath, pending, {
+    expectedSequence: priorPending?.payload.sequence ?? -1,
   });
   return {
     challengeId: challenge.challengeId,
@@ -1009,6 +1442,15 @@ async function prepareSourceCheckout(context, active) {
     ...context.env,
     GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : "/dev/null",
     GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_COUNT: document.tlsVerify ? "1" : "2",
+    GIT_CONFIG_KEY_0: "http.followRedirects",
+    GIT_CONFIG_VALUE_0: "false",
+    ...(document.tlsVerify
+      ? {}
+      : {
+          GIT_CONFIG_KEY_1: "http.sslVerify",
+          GIT_CONFIG_VALUE_1: "false",
+        }),
     GIT_TERMINAL_PROMPT: "0",
     GIT_LFS_SKIP_SMUDGE: "1",
     GIT_NO_LAZY_FETCH: "1",
@@ -1029,9 +1471,6 @@ async function prepareSourceCheckout(context, active) {
       ? {
           program: "git",
           args: [
-            ...(document.tlsVerify
-              ? []
-              : ["-c", "http.sslVerify=false"]),
             "clone",
             ...commonCloneArguments,
             document.repositoryUrl,
@@ -1059,6 +1498,15 @@ async function prepareSourceCheckout(context, active) {
       "GIT_NO_LAZY_FETCH",
       "GIT_CONFIG_GLOBAL",
       "GIT_CONFIG_NOSYSTEM",
+      "GIT_CONFIG_COUNT",
+      "GIT_CONFIG_KEY_0",
+      "GIT_CONFIG_VALUE_0",
+      ...(document.tlsVerify
+        ? []
+        : [
+            "GIT_CONFIG_KEY_1",
+            "GIT_CONFIG_VALUE_1",
+          ]),
       ...(document.credentialEnv ? [document.credentialEnv] : []),
     ],
     timeoutMs: 120_000,
@@ -1115,6 +1563,59 @@ async function prepareSourceCheckout(context, active) {
   return createChallenge(context, active, {
     kind: "source-checkout",
     objectId: document.checkoutId,
+    approvalDigest: reviewDocument.digest,
+    reviewDocument,
+  });
+}
+
+async function prepareSourceRead(context, active, args) {
+  if (!SOURCE_READ_PHASES.has(active.state.phase)) {
+    throw new Error("Source-read review is not legal in the current phase");
+  }
+  const request = await resolveSourceReadRequest({
+    args,
+    env: context.env,
+    projectRoot: context.projectRoot,
+  });
+  if (!request.requiresExactApproval) {
+    throw new Error(
+      "A source-read review is required only for an exact user-supplied GitLab, modules, or Common Hooks URL",
+    );
+  }
+  const reviewDocument = {
+    schemaVersion: "1.0",
+    kind: "source-read",
+    projectId: context.authority.projectId,
+    taskId: active.state.taskId ?? null,
+    phase: active.state.phase,
+    request: request.description,
+    requestDigest: canonicalDigest(request.description),
+    oneUse: true,
+  };
+  assertNoSecrets(reviewDocument, "source-read review");
+  reviewDocument.digest = canonicalDigest(reviewDocument);
+  const prior = await context.authority.readSigned(
+    "artifacts/source-read-review.json",
+    { required: false },
+  );
+  await context.authority.writeSigned(
+    "artifacts/source-read-review.json",
+    {
+      ...reviewDocument,
+      sequence: (prior?.payload.sequence ?? -1) + 1,
+    },
+    { expectedSequence: prior?.payload.sequence ?? -1 },
+  );
+  await supersedeApprovals(context.authority, {
+    kind: "source-read",
+    sessionId: active.attestation.sessionId,
+    reason: "A fresh exact source-read review replaced prior access",
+  });
+  return createChallenge(context, active, {
+    kind: "source-read",
+    objectId:
+      `${request.description.source}:` +
+      request.description.requestUrlDigest.slice(0, 16),
     approvalDigest: reviewDocument.digest,
     reviewDocument,
   });
@@ -1812,15 +2313,20 @@ async function commitContext(context, active) {
     next,
     "Committed approved context",
   );
-  return { phase: next.phase, contextDigest: next.contextDigest };
+  return {
+    phase: next.phase,
+    contextDigest: next.contextDigest,
+    projectFingerprintDigest: fingerprint.digest,
+  };
 }
 
 async function beginTask(context, active, taskId) {
   if (!["PROJECT_READY", "VERIFIED"].includes(active.state.phase)) {
     throw new Error("A task may begin only from PROJECT_READY or VERIFIED");
   }
+  let onboardingFingerprint;
   try {
-    await currentStoredFingerprint(
+    onboardingFingerprint = await currentStoredFingerprint(
       context,
       "fingerprints/onboardingFingerprint.json",
     );
@@ -1857,6 +2363,8 @@ async function beginTask(context, active, taskId) {
   return {
     phase: next.phase,
     taskId,
+    contextDigest: next.contextDigest,
+    projectFingerprintDigest: onboardingFingerprint.digest,
     packageSnapshotDigest: packageSnapshot.digest,
   };
 }
@@ -2020,13 +2528,20 @@ async function recoverWorkflow(context, active, mode) {
 async function status(context) {
   const state = await context.authority.readSigned("state/current.json");
   const chain = await context.authority.verifyEventChain();
+  const fingerprint = currentFingerprintHandle(state.payload);
   return {
     projectId: context.authority.projectId,
     phase: state.payload.phase,
     taskId: state.payload.taskId,
+    contextDigest: state.payload.contextDigest ?? null,
+    packageSnapshotDigest: state.payload.packageSnapshotDigest ?? null,
+    projectFingerprint: fingerprint,
+    projectFingerprintDigest: fingerprint?.digest ?? null,
+    authorityCapabilities: AUTHORITY_CAPABILITIES,
     hooksAttested: state.payload.hooksAttested,
     eventChainValid: chain.valid,
     nextLegalAction: state.payload.nextLegalAction,
+    resumeRequired: true,
   };
 }
 
@@ -2041,19 +2556,24 @@ export async function runWorkflowAuthority(
   const active = await activeSession(context, args["session-handle"]);
   switch (command) {
     case "encode": {
-      if (typeof args.text !== "string" || args.text.length === 0) {
-        throw new Error("encode requires --text");
+      const text = args.text;
+      if (typeof text !== "string" || text.length === 0) {
+        throw new Error("encode requires nonempty --text content");
       }
-      assertNoSecrets(args.text, "encoded helper text");
-      if (Buffer.byteLength(args.text, "utf8") > MAX_ARTIFACT_BYTES) {
+      assertNoSecrets(text, "encoded helper text");
+      if (Buffer.byteLength(text, "utf8") > MAX_ARTIFACT_BYTES) {
         throw new Error("encoded helper text exceeds 1 MiB");
       }
       return {
-        contentBase64: Buffer.from(args.text, "utf8").toString("base64"),
-        sha256: sha256(args.text),
-        byteLength: Buffer.byteLength(args.text, "utf8"),
+        contentBase64: Buffer.from(text, "utf8").toString("base64"),
+        transportSha256: sha256(text),
+        byteLength: Buffer.byteLength(text, "utf8"),
       };
     }
+    case "resume":
+      return createResumeProjection(context, active);
+    case "checkpoint":
+      return checkpointProgress(context, active, args);
     case "discover": {
       if (active.state.phase !== "UNONBOARDED") {
         throw new Error("discover is legal only from UNONBOARDED");
@@ -2099,6 +2619,9 @@ export async function runWorkflowAuthority(
       if (args.kind === "source-checkout") {
         return prepareSourceCheckout(context, active);
       }
+      if (args.kind === "source-read") {
+        return prepareSourceRead(context, active, args);
+      }
       if (args.kind === "query") return prepareQuery(context, active);
       if (["plan", "execution", "mutation"].includes(args.kind)) {
         return preparePlanLike(context, active, args.kind);
@@ -2121,7 +2644,8 @@ export async function runWorkflowAuthority(
 
 if (isDirectExecution(import.meta.url)) {
   try {
-    printJson(await runWorkflowAuthority());
+    const directArguments = process.argv.slice(2);
+    printJson(await runWorkflowAuthority(directArguments, process.env));
   } catch (error) {
     printJson({ ok: false, error: error.message });
     process.exitCode = 1;

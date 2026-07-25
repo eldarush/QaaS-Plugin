@@ -9,13 +9,13 @@ The recorded capability/tool/input is a permission contract only. Reads use the
 fixed internal project-artifact or remote-GET adapter, bind a sanitized endpoint
 identity/value digest, and recheck that binding immediately before access.
 
-| Source | Non-secret endpoint identifier | Credential variable name | Available evidence | Task relevance | Query constraints |
+| Source | Exact non-secret endpoint or local selector | Credential variable name | Available evidence | Task relevance | Query constraints |
 |---|---|---|---|---|---|
 | {{SOURCE}} | {{ENDPOINT}} | {{CREDENTIAL_ENV_NAME}} | {{EVIDENCE_TYPE}} | {{RELEVANCE}} | {{CONSTRAINTS}} |
 
-The endpoint column stores only a non-secret configured selector identifier,
-never a resolved URL or credential. The credential column stores only
-environment-variable names.
+The endpoint column stores the exact credential-free HTTPS base URL reviewed
+for the task, or `project-artifact` for local evidence. The credential column
+stores only environment-variable names, never values.
 
 ## Approved interpretation rules
 

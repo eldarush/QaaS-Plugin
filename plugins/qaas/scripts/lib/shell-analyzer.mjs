@@ -208,12 +208,65 @@ function classifyVector(program, args) {
     if (["--info", "--version", "--list-sdks", "--list-runtimes"].includes(lowerArgs[0])) {
       return "ordinary-read";
     }
-    if (lowerArgs[0] === "restore") return "restore";
-    if (lowerArgs[0] === "build") return "build";
-    if (lowerArgs[0] === "test") return "test-run";
+    const namesAnExternalPublicFeed = lowerArgs.some(
+      (arg) =>
+        /^https?:\/\//u.test(arg) &&
+        /(?:api\.)?nuget\.org(?:\/|$)/u.test(arg),
+    );
+    if (namesAnExternalPublicFeed) return "unknown";
+    if (lowerArgs[0] === "restore") {
+      let bindsReviewedSources = false;
+      for (let index = 1; index < lowerArgs.length; index += 1) {
+        const name = lowerArgs[index];
+        if (name === "--configfile") {
+          const value = args[index + 1];
+          if (
+            typeof value !== "string" ||
+            value.length === 0 ||
+            path.isAbsolute(value) ||
+            value.replaceAll("\\", "/").split("/").includes("..")
+          ) {
+            return "unknown";
+          }
+          bindsReviewedSources = true;
+          index += 1;
+        } else if (name.startsWith("--configfile=")) {
+          const value = args[index].slice(args[index].indexOf("=") + 1);
+          if (
+            value.length === 0 ||
+            path.isAbsolute(value) ||
+            value.replaceAll("\\", "/").split("/").includes("..")
+          ) {
+            return "unknown";
+          }
+          bindsReviewedSources = true;
+        } else if (name === "--source") {
+          if (typeof args[index + 1] !== "string" || args[index + 1].length === 0) {
+            return "unknown";
+          }
+          bindsReviewedSources = true;
+          index += 1;
+        } else if (name.startsWith("--source=")) {
+          if (args[index].slice(args[index].indexOf("=") + 1).length === 0) {
+            return "unknown";
+          }
+          bindsReviewedSources = true;
+        }
+      }
+      return bindsReviewedSources ? "restore" : "unknown";
+    }
+    if (lowerArgs[0] === "build") {
+      return lowerArgs.includes("--no-restore") ? "build" : "unknown";
+    }
+    if (lowerArgs[0] === "test") {
+      return lowerArgs.includes("--no-restore") ? "test-run" : "unknown";
+    }
     if (lowerArgs[0] === "run") {
       const separator = lowerArgs.indexOf("--");
       const qaasVerb = separator >= 0 ? lowerArgs[separator + 1] : null;
+      const implicitRestoreDisabled =
+        lowerArgs.includes("--no-restore") || lowerArgs.includes("--no-build");
+      if (!implicitRestoreDisabled) return "unknown";
       if (qaasVerb === "template") return "template";
       if (qaasVerb === "run" || qaasVerb === "execute") return "test-run";
       return "unknown";

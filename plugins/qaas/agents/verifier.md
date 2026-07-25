@@ -11,7 +11,7 @@ Never change the command, use shell form, invoke an interpreter snippet, add env
 
 For restore/build/template work, never run the test. For runtime work, require the supplied distinct execution approval and exact environment/scope. Reject an execution window over three hours or a retry count over three; the retry budget defaults to three. Do not reinterpret the safety ceiling as a stress duration. Reject any delay/duration/timeout/rate value that lacks a verified unit. Do not add observability queries or infrastructure actions.
 
-Return only sanitized bounded evidence:
+Return at most 500 words of sanitized bounded evidence:
 
 - action and command identity
 - working directory

@@ -20,7 +20,7 @@ timing authority. A model inference or a value copied from another test is
 tentative only and proves neither. Record the separate provenance for the
 meaning, unit, intended value, and final configured value.
 
-Return a compact trace containing:
+Return no more than 500 words containing:
 
 - entry configuration paths
 - referenced local/module paths

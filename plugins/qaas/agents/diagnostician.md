@@ -11,7 +11,7 @@ Never write, run commands, access credential-bearing files, delete/move/rename, 
 
 Correlate timestamps, QaaS status/exit, rendered configuration, session output, assertion/report evidence, and explicitly supplied observability excerpts. Distinguish correlation from proof. Classify the likely cause as test, configuration, hook, tested-system, deployment, environment, tooling, or unknown.
 
-Return at most 700 words:
+Return at most 500 words:
 
 - observed facts with evidence paths
 - primary classification and confidence basis

@@ -11,26 +11,15 @@ import {
   validateCapabilityRegistry,
 } from "./mcp-analyzer.mjs";
 import { toolInputDigest } from "./approval-authority.mjs";
-import { redactText, secretFindings } from "./redact.mjs";
+import { redactText } from "./redact.mjs";
+import { assertCredentialFreeQueryParameters } from "./url-safety.mjs";
 
-const HTTP_CONFIGURATION = Object.freeze({
-  reportportal: {
-    endpointSelector: "QAAS_REPORTPORTAL_URL",
-    credentialSelector: "QAAS_REPORTPORTAL_CREDENTIAL_ENV",
-  },
-  elastic: {
-    endpointSelector: "QAAS_ELASTIC_URL",
-    credentialSelector: "QAAS_ELASTIC_CREDENTIAL_ENV",
-  },
-  thanos: {
-    endpointSelector: "QAAS_THANOS_URL",
-    credentialSelector: "QAAS_THANOS_CREDENTIAL_ENV",
-  },
-  kubernetes: {
-    endpointSelector: "QAAS_KUBERNETES_URL",
-    credentialSelector: "QAAS_KUBERNETES_CREDENTIAL_ENV",
-  },
-});
+const HTTP_PROVIDERS = new Set([
+  "reportportal",
+  "elastic",
+  "thanos",
+  "kubernetes",
+]);
 
 function inside(root, target) {
   const relative = path.relative(root, target);
@@ -80,27 +69,14 @@ function capabilityFor(query, registry) {
   return capability;
 }
 
-function expectedCredentialNames(query, env) {
+function expectedCredentialNames(query) {
   if (query.provider === "allure") return [];
-  const configuration = HTTP_CONFIGURATION[query.provider];
-  if (!configuration) {
+  if (!HTTP_PROVIDERS.has(query.provider)) {
     throw new Error(
       `No proven read-only adapter is available for provider ${query.provider}`,
     );
   }
-  if (query.endpointSelector !== configuration.endpointSelector) {
-    throw new Error("Query endpoint selector does not match its provider");
-  }
-  const selected = env[configuration.credentialSelector] ?? null;
-  if (
-    selected !== null &&
-    !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(selected)
-  ) {
-    throw new Error(
-      `${configuration.credentialSelector} must name one safe credential variable`,
-    );
-  }
-  return selected ? [selected] : [];
+  return [...query.credentialEnvNames];
 }
 
 function endpointProof(query, env, projectRoot) {
@@ -117,11 +93,7 @@ function endpointProof(query, env, projectRoot) {
       endpointValueDigest: sha256(path.resolve(projectRoot)),
     };
   }
-  const configuration = HTTP_CONFIGURATION[query.provider];
-  const raw = env[configuration.endpointSelector];
-  if (!raw) {
-    throw new Error(`${configuration.endpointSelector} is not configured`);
-  }
+  const raw = query.endpointSelector;
   const base = new URL(raw);
   if (
     !["http:", "https:"].includes(base.protocol) ||
@@ -141,7 +113,7 @@ function endpointProof(query, env, projectRoot) {
   return {
     adapterId: "qaas-internal-http-get-v1",
     endpointIdentity: {
-      selector: configuration.endpointSelector,
+      selector: "exact-user-approved-url",
       protocol: base.protocol,
       origin: base.origin,
       basePath: base.pathname,
@@ -157,7 +129,7 @@ export function attestQuery({
   projectRoot,
 }) {
   const capability = capabilityFor(query, registry);
-  const credentialEnvNames = expectedCredentialNames(query, env);
+  const credentialEnvNames = expectedCredentialNames(query);
   if (
     canonicalDigest(query.credentialEnvNames) !==
     canonicalDigest(credentialEnvNames)
@@ -188,6 +160,9 @@ export function attestQuery({
     throw new Error("Remote observability queries require exact HTTP GET capability input");
   }
   const endpoint = endpointProof(query, env, projectRoot);
+  if (query.provider !== "allure") {
+    safeRemoteUrl(query);
+  }
   return {
     schemaVersion: "1.0",
     queryDigest: query.queryDigest,
@@ -340,9 +315,8 @@ async function readAllure(query, projectRoot) {
   return { status: 200, bytes: await readFile(target) };
 }
 
-function safeRemoteUrl(query, env) {
-  const configuration = HTTP_CONFIGURATION[query.provider];
-  const base = new URL(env[configuration.endpointSelector]);
+function safeRemoteUrl(query) {
+  const base = new URL(query.endpointSelector);
   if (
     !["http:", "https:"].includes(base.protocol) ||
     base.username ||
@@ -372,19 +346,12 @@ function safeRemoteUrl(query, env) {
   ) {
     throw new Error("Query URL escapes its configured provider endpoint");
   }
-  for (const [key, value] of requested.searchParams) {
-    if (
-      /(?:token|secret|password|api[-_]?key|auth|credential)/iu.test(key) ||
-      secretFindings(value).length > 0
-    ) {
-      throw new Error("Query URL contains credential-like parameters");
-    }
-  }
+  assertCredentialFreeQueryParameters(requested, "Query URL");
   return requested;
 }
 
 async function readRemote(query, env, fetchImpl) {
-  const url = safeRemoteUrl(query, env);
+  const url = safeRemoteUrl(query);
   const credentialName = query.credentialEnvNames[0] ?? null;
   const credential = credentialName ? env[credentialName] : null;
   const controller = new AbortController();

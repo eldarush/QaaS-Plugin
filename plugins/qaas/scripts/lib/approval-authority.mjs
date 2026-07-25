@@ -164,7 +164,7 @@ async function initializeMetadata({
 export async function openAuthority({
   pluginData,
   projectRoot,
-  pluginVersion = "0.1.0",
+  pluginVersion = "0.2.0",
   create = false,
 }) {
   if (typeof pluginData !== "string" || pluginData.trim() === "") {
@@ -748,6 +748,7 @@ export async function createApprovalChallenge(
       "mutation",
       "capabilities",
       "source-checkout",
+      "source-read",
       "readiness-fact",
       "query",
       "lease-takeover",
@@ -978,6 +979,54 @@ export async function supersedeApprovalChallenges(
   return count;
 }
 
+export async function supersedeApprovals(
+  authority,
+  { kind, sessionId, reason },
+) {
+  const directory = authority.resolveProtectedPath("approvals");
+  let entries;
+  try {
+    entries = await readdir(directory, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === "ENOENT") return 0;
+    throw error;
+  }
+  let count = 0;
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+    const relative = `approvals/${entry.name}`;
+    const { payload } = await authority.readSigned(relative);
+    if (
+      payload.kind !== kind ||
+      payload.sessionId !== sessionId ||
+      ![undefined, "active"].includes(payload.status)
+    ) {
+      continue;
+    }
+    await authority.writeSigned(
+      relative,
+      {
+        ...payload,
+        status: "superseded",
+        supersededAt: new Date().toISOString(),
+        supersededReason: reason,
+        sequence: payload.sequence + 1,
+      },
+      { expectedSequence: payload.sequence },
+    );
+    count += 1;
+  }
+  if (count > 0) {
+    await authority.appendEvent("approvals-superseded", {
+      kind,
+      sessionId,
+      reason,
+      count,
+    });
+  }
+  return count;
+}
+
 export async function findApprovalByDigest(
   authority,
   { kind, approvedDigest, sessionId, leaseId },
@@ -999,7 +1048,8 @@ export async function findApprovalByDigest(
       safeEqualHex(payload.approvedDigest, approvedDigest) &&
       payload.sessionId === sessionId &&
       payload.leaseId === leaseId &&
-      payload.pluginVersion === authority.metadata.pluginVersion
+      payload.pluginVersion === authority.metadata.pluginVersion &&
+      [undefined, "active"].includes(payload.status)
     ) {
       matches.push(payload);
     }
@@ -1008,6 +1058,51 @@ export async function findApprovalByDigest(
     throw new Error("Multiple approvals match the current digest and lease");
   }
   return matches[0] ?? null;
+}
+
+export async function consumeApproval(
+  authority,
+  approval,
+  { reason },
+) {
+  if (
+    !approval ||
+    typeof approval.approvalId !== "string" ||
+    !/^[a-f0-9]{36}$/u.test(approval.approvalId) ||
+    typeof reason !== "string" ||
+    reason.length < 1 ||
+    reason.length > 240
+  ) {
+    throw new Error("Approval consumption requires an exact approval and reason");
+  }
+  const relative = `approvals/${approval.approvalId}.json`;
+  const { payload } = await authority.readSigned(relative);
+  if (
+    payload.approvalId !== approval.approvalId ||
+    payload.kind !== approval.kind ||
+    !safeEqualHex(payload.approvedDigest, approval.approvedDigest) ||
+    ![undefined, "active"].includes(payload.status)
+  ) {
+    throw new Error("Approval is stale or has already been consumed");
+  }
+  const consumed = {
+    ...payload,
+    status: "consumed",
+    consumedAt: new Date().toISOString(),
+    consumedReason: reason,
+    sequence: payload.sequence + 1,
+  };
+  await authority.writeSigned(relative, consumed, {
+    expectedSequence: payload.sequence,
+  });
+  await authority.appendEvent("approval-consumed", {
+    approvalId: payload.approvalId,
+    kind: payload.kind,
+    objectId: payload.objectId,
+    approvedDigest: payload.approvedDigest,
+    reason,
+  });
+  return consumed;
 }
 
 export async function mintApproval(
@@ -1044,6 +1139,7 @@ export async function mintApproval(
     questionId: payload.questionId,
     source,
     decision: "Approve",
+    status: "active",
     timestamp: new Date().toISOString(),
     sequence: 0,
     leaseId: payload.leaseId,

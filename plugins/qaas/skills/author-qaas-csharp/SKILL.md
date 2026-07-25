@@ -27,8 +27,11 @@ If invoked outside an implementation or approved repair phase, return control to
   change and restore action. If anything is absent, unknown, contradicted, or
   newly needed, write nothing and return to one-question/one-query planning for
   a revised approval. Do not discover, infer, or invent closure after approval.
-- When active authority content-binds writes, require the approved exact
-  complete target bytes, their SHA-256, and one matching
+- Read the signed active authority projection's
+  `authorityCapabilities.writeContentBinding`. It is `false` in this release,
+  so do not require or invent target bytes. Only if a future active authority
+  reports `true`, require the approved exact complete target bytes, their
+  SHA-256, and one matching
   `write <add|modify> <path> sha256:<digest>` command per scoped write. Do not
   redraft content after approval.
 - Preserve disclosed literal tokens and array order exactly in structured

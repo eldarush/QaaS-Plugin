@@ -1,7 +1,7 @@
 <!-- QAAS:START -->
 # QaaS project workflow
 
-The approved project model is indexed by [qaas/context-index.json](qaas/context-index.json). Load only the topic files needed for the current question.
+The approved project model is indexed by [qaas/context-index.json](qaas/context-index.json). Keep one lifecycle phase active and load only the single topic needed for the current decision.
 
 Mandatory workflow:
 
@@ -14,6 +14,7 @@ Mandatory workflow:
 7. Preserve the project's YAML/C# style, naming, paths, samples, modules, hooks, packages, and commands. Make the smallest accepted change.
 8. Stop on missing current documentation, unsupported Type B work, stale context, an unapproved deviation, failed safety attestation, or an integrity error.
 9. Build/template success is static evidence, not proof that the test or tested system passed.
+10. Before compaction, use the QaaS progress checkpoint; after resume, follow only the signed bounded resume projection and exact pending action.
 
 Committed `qaas/state/**` is a readable mirror only. Do not edit it directly or treat it as approval authority.
 Never read or write cross-project memory automatically. Keep all project, system, sample, hook, command, environment, endpoint, credential, acceptance, and test facts in this bounded project context.

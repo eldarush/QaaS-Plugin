@@ -12,9 +12,13 @@ import {
   matchCapabilityInput,
   validateCapabilityRegistry,
 } from "./mcp-analyzer.mjs";
+import {
+  BUILT_IN_QAAS_DOCS_URL,
+  builtInEndpoint,
+} from "./built-in-endpoints.mjs";
 
-const DEFAULT_OUTPUT_LIMIT = 32 * 1024;
-export const DEFAULT_QAAS_DOCS_URL = "https://docs.qaas.online/";
+const DEFAULT_OUTPUT_LIMIT = 16 * 1024;
+export const DEFAULT_QAAS_DOCS_URL = BUILT_IN_QAAS_DOCS_URL;
 export const QAAS_DOCS_CONFIGURATION_NAMES = Object.freeze([
   "QAAS_DOCS_PRIMARY_URL",
   "QAAS_DOCS_SECONDARY_URL",
@@ -59,33 +63,43 @@ function configuredUrl(name, value) {
   return url.toString();
 }
 
-function configuredUrlIdentity(name, value, fallback = null) {
-  const selectorPresent = Object.hasOwn(value.env, name);
-  const raw = value.env[name];
-  const selected = raw ?? fallback;
-  const configured = configuredUrl(name, selected);
-  if (!configured) {
-    return {
-      selector: name,
-      selectorPresent,
+function builtInDocsIdentity(env) {
+  const endpoint = builtInEndpoint("docs");
+  const legacyName = "QAAS_DOCS_PRIMARY_URL";
+  const legacyPresent = Object.hasOwn(env, legacyName);
+  const legacyRaw = env[legacyName];
+  if (legacyRaw) configuredUrl(legacyName, legacyRaw);
+  return {
+    selector: "built-in:qaas-docs",
+    selectorPresent: true,
+    selectorValueDigest: endpoint.urlDigest,
+    effective: {
+      protocol: endpoint.protocol,
+      origin: endpoint.origin,
+      pathname: endpoint.pathname,
+      queryParameterNames: [],
+      urlDigest: endpoint.urlDigest,
+    },
+    ignoredLegacyOverride: {
+      selector: legacyName,
+      selectorPresent: legacyPresent,
       selectorValueDigest:
-        selectorPresent ? sha256(String(raw)) : null,
-      effective: null,
-    };
-  }
-  const url = new URL(configured);
+        legacyPresent ? sha256(String(legacyRaw)) : null,
+    },
+  };
+}
+
+function ignoredUrlOverrideIdentity(name, env) {
+  const selectorPresent = Object.hasOwn(env, name);
+  const raw = env[name];
+  if (raw) configuredUrl(name, raw);
   return {
     selector: name,
     selectorPresent,
     selectorValueDigest:
       selectorPresent ? sha256(String(raw)) : null,
-    effective: {
-      protocol: url.protocol,
-      origin: url.origin,
-      pathname: url.pathname,
-      queryParameterNames: [...url.searchParams.keys()].sort(),
-      urlDigest: sha256(url.toString()),
-    },
+    effective: null,
+    ignored: true,
   };
 }
 
@@ -183,14 +197,16 @@ export async function attestDocumentationSourceConfiguration(
   const attestation = {
     schemaVersion: "1.0",
     configurationNames: [...QAAS_DOCS_CONFIGURATION_NAMES],
-    primary: configuredUrlIdentity(
-      "QAAS_DOCS_PRIMARY_URL",
-      { env },
-      DEFAULT_QAAS_DOCS_URL,
-    ),
-    secondary: configuredUrlIdentity(
+    builtInEndpoints: {
+      docs: builtInEndpoint("docs"),
+    },
+    builtInEndpointDigests: {
+      docs: canonicalDigest(builtInEndpoint("docs")),
+    },
+    primary: builtInDocsIdentity(env),
+    secondary: ignoredUrlOverrideIdentity(
       "QAAS_DOCS_SECONDARY_URL",
-      { env },
+      env,
     ),
     zim: await configuredZimIdentity(env),
     mcp: configuredMcpIdentity(env),
@@ -258,14 +274,11 @@ export function resolveDocumentationSources({
   }
   return {
     mcp,
-    primaryUrl: configuredUrl(
-      "QAAS_DOCS_PRIMARY_URL",
-      env.QAAS_DOCS_PRIMARY_URL ?? DEFAULT_QAAS_DOCS_URL,
-    ),
-    secondaryUrl: configuredUrl(
-      "QAAS_DOCS_SECONDARY_URL",
-      env.QAAS_DOCS_SECONDARY_URL,
-    ),
+    builtInEndpoints: {
+      docs: builtInEndpoint("docs"),
+    },
+    primaryUrl: DEFAULT_QAAS_DOCS_URL,
+    secondaryUrl: null,
     zimPath: env.QAAS_DOCS_ZIM_PATH
       ? path.resolve(env.QAAS_DOCS_ZIM_PATH)
       : null,
@@ -508,13 +521,20 @@ export async function searchConfiguredDocumentationIndex(
   query,
   { outputLimitBytes = DEFAULT_OUTPUT_LIMIT, timeoutMs = 10_000 } = {},
 ) {
-  const text = await fetchBounded(baseUrl, {
+  const effectiveOutputLimitBytes = Math.min(
     outputLimitBytes,
+    DEFAULT_OUTPUT_LIMIT,
+  );
+  const text = await fetchBounded(baseUrl, {
+    outputLimitBytes: effectiveOutputLimitBytes,
     timeoutMs,
     allowedBase: baseUrl,
   });
   const candidates = searchIndexCandidates(text, baseUrl, query);
-  const bounded = boundedExcerpt(JSON.stringify(candidates), outputLimitBytes);
+  const bounded = boundedExcerpt(
+    JSON.stringify(candidates),
+    effectiveOutputLimitBytes,
+  );
   return {
     kind: "configured-url-search",
     baseUrl,
@@ -597,6 +617,10 @@ export async function resolveDocumentationQuery({
   ) {
     throw new Error("Documentation timeoutMs must be between 1 and 60,000");
   }
+  const effectiveOutputLimitBytes = Math.min(
+    outputLimitBytes,
+    DEFAULT_OUTPUT_LIMIT,
+  );
   if (sources.mcp && typeof callMcp === "function") {
     const capability = relativeUrl ? sources.mcp.read : sources.mcp.search;
     const input = capabilityInput(
@@ -604,7 +628,10 @@ export async function resolveDocumentationQuery({
       relativeUrl
         ? {
             identifier: relativeUrl,
-            limit: Math.min(outputLimitBytes, capability.outputLimitBytes),
+            limit: Math.min(
+              effectiveOutputLimitBytes,
+              capability.outputLimitBytes,
+            ),
           }
         : {
             query,
@@ -614,7 +641,7 @@ export async function resolveDocumentationQuery({
     const results = await callMcp(capability, input);
     const boundedSearch = boundedExcerpt(
       JSON.stringify(results),
-      Math.min(outputLimitBytes, capability.outputLimitBytes),
+      Math.min(effectiveOutputLimitBytes, capability.outputLimitBytes),
     );
     return {
       kind: relativeUrl ? "mcp-read" : "mcp-search",
@@ -629,7 +656,7 @@ export async function resolveDocumentationQuery({
       try {
         return {
           ...(await searchConfiguredDocumentationIndex(baseUrl, query, {
-            outputLimitBytes,
+            outputLimitBytes: effectiveOutputLimitBytes,
             timeoutMs,
           })),
           priorFailures: failures,
@@ -651,14 +678,14 @@ export async function resolveDocumentationQuery({
     }
     try {
       const text = await fetchBounded(relativeUrl, {
-        outputLimitBytes,
+        outputLimitBytes: effectiveOutputLimitBytes,
         timeoutMs,
         allowedBase: baseUrl,
       });
       return {
         kind: "http-read",
         source: new URL(relativeUrl, baseUrl).toString(),
-        ...boundedExcerpt(text, outputLimitBytes),
+        ...boundedExcerpt(text, effectiveOutputLimitBytes),
         priorFailures: failures,
       };
     } catch (error) {
@@ -693,6 +720,6 @@ export async function resolveDocumentationQuery({
     );
   }
   throw new Error(
-    "No QaaS documentation source is configured. Provide an approved read-only docs MCP or QAAS_DOCS_PRIMARY_URL.",
+    "The built-in QaaS documentation source is unavailable.",
   );
 }

@@ -11,20 +11,20 @@ queries, and each query binds:
 
 - provider and current capability-registry identifier
 - exact tool name, bounded exact tool input, and their canonical digest
-- configured non-secret endpoint selector identifier and purpose
-- zero to four credential environment-variable names, never credential values
+- exact non-secret endpoint base URL (or `project-artifact`) and purpose
+- zero or one bearer-token environment-variable name, never its value
 - read-only mode and timeout, output-byte, and item bounds
 - typed response checks and the canonical per-query digest
 
-The endpoint selector is an identifier such as `QAAS_REPORTPORTAL_URL` or
-`project-artifact`, not an endpoint value, host, path, or URL. The exact tool
+The endpoint field is `project-artifact` for local Allure data. For a remote
+provider it is the exact credential-free HTTPS base URL (or explicit loopback)
+the user supplied and reviewed for this transaction. The plugin has no global
+observability URL setup and performs no endpoint discovery. The exact tool
 input may contain only JSON values, has maximum depth eight, permits no more
 than 100 entries in any object or array, and is limited to 16 KiB of canonical
-UTF-8. `toolInputDigest` is the SHA-256 of that exact canonical object. Runtime
-authority resolves the selector against the matching approved capability. An
-absolute endpoint supplied in the selector, alternate host, redirect to
-another origin, connector-specific write operation, or dynamically constructed
-query is outside the plan.
+UTF-8. `toolInputDigest` is the SHA-256 of that exact canonical object. An
+alternate host, redirect to another origin, connector-specific write operation,
+or dynamically constructed query is outside the plan.
 
 Before review, the deterministic authority must prove that the exact connector
 is installed, successfully probed, bounded, and read-only for the named

@@ -88,7 +88,7 @@ available to the corresponding Claude stage. Fresh agents forward-test skills
 to expose hidden assumptions.
 
 This proxy can find workflow and prompt defects, but it cannot establish
-MiniMax M2.7 quality or Claude Code 2.1.201 hook semantics. The public preview
+MiniMax M2.7 quality or Claude Code >=2.1.180 hook semantics. The public preview
 therefore makes no pass-rate, speed, coverage, scenario-count, or comparative
 performance claim.
 
@@ -108,5 +108,5 @@ A candidate is blocked by:
 - Public/private boundary violations.
 
 The final organizational gate is a manual acceptance run in the actual
-air-gapped Claude Code 2.1.201 + MiniMax M2.7 environment using approved
+air-gapped Claude Code >=2.1.180 + MiniMax M2.7 environment using approved
 internal docs, packages, and representative projects.

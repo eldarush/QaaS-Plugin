@@ -17,7 +17,7 @@ confirmation.
 
 Inventory only the requested slice. Classify paths as relevant, generated, vendor, or unknown and cite the path supporting each finding. Do not infer behavioral semantics from names, comments, README text, or existing tests. Mark any relevant file that lacks a user explanation as needing explanation before semantic interpretation.
 
-Return at most:
+Return no more than 500 words:
 
 1. Scope inspected and exclusions.
 2. Concise path/role/evidence table.

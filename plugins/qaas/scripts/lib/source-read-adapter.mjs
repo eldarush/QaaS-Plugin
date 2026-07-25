@@ -1,28 +1,33 @@
 import { canonicalDigest, sha256 } from "./canonical-json.mjs";
-import { redactText, secretFindings } from "./redact.mjs";
+import { redactText } from "./redact.mjs";
+import { builtInEndpoint } from "./built-in-endpoints.mjs";
+import { assertCredentialFreeQueryParameters } from "./url-safety.mjs";
 
 const SOURCE_CONFIGURATION = Object.freeze({
   gitlab: Object.freeze({
-    url: "QAAS_GITLAB_URL",
-    credential: "QAAS_GITLAB_CREDENTIAL_ENV",
+    reviewedProjectInput: true,
+    legacyUrl: "QAAS_GITLAB_URL",
+    legacyCredential: "QAAS_GITLAB_CREDENTIAL_ENV",
   }),
   artifactory: Object.freeze({
-    url: "QAAS_ARTIFACTORY_URL",
-    credential: "QAAS_ARTIFACTORY_CREDENTIAL_ENV",
+    builtIn: "artifactory",
   }),
   nuget: Object.freeze({
-    url: "QAAS_NUGET_FEED_URL",
-    credential: "QAAS_NUGET_CREDENTIAL_ENV",
+    projectPackageSource: true,
+    legacyCredential: "QAAS_NUGET_CREDENTIAL_ENV",
   }),
   modules: Object.freeze({
-    url: "QAAS_MODULES_REPO_URL",
-    credential: "QAAS_MODULES_CREDENTIAL_ENV",
+    reviewedProjectInput: true,
+    legacyUrl: "QAAS_MODULES_REPO_URL",
+    legacyCredential: "QAAS_MODULES_CREDENTIAL_ENV",
   }),
   "common-hooks": Object.freeze({
-    url: "QAAS_COMMON_HOOKS_REPO_URL",
-    credential: "QAAS_COMMON_HOOKS_CREDENTIAL_ENV",
+    reviewedProjectInput: true,
+    legacyUrl: "QAAS_COMMON_HOOKS_REPO_URL",
+    legacyCredential: "QAAS_COMMON_HOOKS_CREDENTIAL_ENV",
   }),
 });
+const DEFAULT_OUTPUT_LIMIT = 16 * 1024;
 
 function isExplicitLoopback(url) {
   const hostname = url.hostname.toLowerCase();
@@ -33,68 +38,185 @@ function isExplicitLoopback(url) {
   );
 }
 
-function configuredBase(source, env) {
+function endpointIdentity({
+  source,
+  configuration,
+  url,
+  configuredBy,
+}) {
+  if (configuration.builtIn) {
+    return builtInEndpoint(configuration.builtIn);
+  }
+  return {
+    kind:
+      configuration.projectPackageSource
+        ? "project-package-metadata"
+        : configuredBy === "reviewed-command-input"
+          ? "reviewed-project-input"
+          : "legacy-project-configuration",
+    name: source,
+    configuredBy,
+    protocol: url.protocol,
+    origin: url.origin,
+    pathname: url.pathname,
+    urlDigest: sha256(url.toString()),
+  };
+}
+
+function configuredBase(
+  source,
+  env,
+  {
+    projectBaseUrl = null,
+    credentialEnv = null,
+    allowLegacyEnvironment = true,
+  } = {},
+) {
   const configuration = SOURCE_CONFIGURATION[source];
   if (!configuration) {
     throw new Error(
       "source must be gitlab, artifactory, nuget, modules, or common-hooks",
     );
   }
-  const value = env[configuration.url];
-  if (!value) throw new Error(`${configuration.url} is not configured`);
+  const builtIn = configuration.builtIn
+    ? builtInEndpoint(configuration.builtIn)
+    : null;
+  const directBaseProvided =
+    projectBaseUrl !== null && projectBaseUrl !== undefined;
+  if (builtIn && directBaseProvided) {
+    throw new Error(
+      "The built-in Artifactory endpoint does not accept a base URL override",
+    );
+  }
+  const legacyBase =
+    allowLegacyEnvironment && configuration.legacyUrl
+      ? env[configuration.legacyUrl] ?? null
+      : null;
+  const value = builtIn?.url ?? projectBaseUrl ?? legacyBase;
+  if (!value) {
+    if (configuration.projectPackageSource) {
+      throw new Error(
+        "NuGet source must come from current project package metadata",
+      );
+    }
+    throw new Error(
+      `An exact reviewed --base-url is required for ${source} reads`,
+    );
+  }
   const url = new URL(value);
   if (!["http:", "https:"].includes(url.protocol)) {
-    throw new Error(`${configuration.url} must use HTTP or HTTPS`);
+    throw new Error("Configured source must use HTTP or HTTPS");
   }
   if (url.username || url.password) {
-    throw new Error(`${configuration.url} may not contain credentials`);
+    throw new Error("Configured source may not contain credentials");
   }
-  validateQuery(url, `${configuration.url} configuration`);
-  const credentialEnv = env[configuration.credential] ?? null;
+  const configuredBy =
+    builtIn
+      ? `built-in:${configuration.builtIn}`
+      : configuration.projectPackageSource
+        ? "project-package-metadata"
+        : directBaseProvided
+          ? "reviewed-command-input"
+          : configuration.legacyUrl;
+  validateQuery(url, `${configuredBy} configuration`);
+  const legacyCredentialEnv =
+    allowLegacyEnvironment && configuration.legacyCredential
+      ? env[configuration.legacyCredential] ?? null
+      : null;
   if (
+    allowLegacyEnvironment &&
+    configuration.legacyCredential &&
     credentialEnv !== null &&
-    (typeof credentialEnv !== "string" ||
-      !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(credentialEnv) ||
-      /^(?:CLAUDE_|CODEX_|ANTHROPIC_)/u.test(credentialEnv))
+    legacyCredentialEnv === null
   ) {
     throw new Error(
-      `${configuration.credential} must name one user-selected environment variable`,
+      "credentialEnv must match user configuration when legacy adapter mode is used",
     );
   }
   if (
     credentialEnv !== null &&
+    legacyCredentialEnv !== null &&
+    credentialEnv !== legacyCredentialEnv
+  ) {
+    throw new Error(
+      "credentialEnv must match user configuration when a legacy selector is present",
+    );
+  }
+  const selectedCredentialEnv = credentialEnv ?? legacyCredentialEnv;
+  if (builtIn && selectedCredentialEnv !== null) {
+    throw new Error(
+      "The built-in Artifactory endpoint does not accept a credential selector",
+    );
+  }
+  if (
+    selectedCredentialEnv !== null &&
+    (typeof selectedCredentialEnv !== "string" ||
+      !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(selectedCredentialEnv) ||
+      /^(?:CLAUDE_|CODEX_|ANTHROPIC_)/u.test(selectedCredentialEnv))
+  ) {
+    throw new Error(
+      "credentialEnv must name one user-selected environment variable",
+    );
+  }
+  if (
+    selectedCredentialEnv !== null &&
     url.protocol !== "https:" &&
     !isExplicitLoopback(url)
   ) {
     throw new Error(
-      `${configuration.url} must use HTTPS or an explicit loopback host when credentials are configured`,
+      "Configured source must use HTTPS or an explicit loopback host when credentials are configured",
     );
   }
-  return {
-    variable: configuration.url,
-    credentialVariable: configuration.credential,
-    credentialEnv,
+  const endpoint = endpointIdentity({
+    source,
+    configuration,
     url,
+    configuredBy,
+  });
+  return {
+    variable: configuredBy,
+    configurationNames:
+      configuredBy === configuration.legacyUrl
+        ? [configuration.legacyUrl]
+        : [],
+    credentialVariable:
+      credentialEnv !== null
+        ? "--credential-env"
+        : legacyCredentialEnv !== null
+          ? configuration.legacyCredential
+          : null,
+    credentialEnv: selectedCredentialEnv,
+    url,
+    endpoint,
+    endpointDigest: canonicalDigest(endpoint),
   };
 }
 
-const CREDENTIAL_QUERY_KEY =
-  /(?:token|secret|password|passwd|api[-_]?key|signature|credential|auth)/iu;
-const HIGH_ENTROPY_QUERY_VALUE =
-  /^(?=.{24,256}$)(?=.*[A-Za-z])(?=.*\d)[A-Za-z0-9._~+/=-]+$/u;
+export function attestConfiguredSourceConfiguration({
+  source,
+  env = process.env,
+  projectBaseUrl = null,
+  credentialEnv = null,
+  allowLegacyEnvironment = true,
+}) {
+  const configured = configuredBase(source, env, {
+    projectBaseUrl,
+    credentialEnv,
+    allowLegacyEnvironment,
+  });
+  return {
+    source,
+    configuredBy: configured.variable,
+    configurationNames: configured.configurationNames,
+    credentialSelector: configured.credentialVariable,
+    selectedCredentialEnvironmentName: configured.credentialEnv,
+    endpoint: configured.endpoint,
+    endpointDigest: configured.endpointDigest,
+  };
+}
 
 function validateQuery(url, label) {
-  for (const [key, value] of url.searchParams) {
-    if (CREDENTIAL_QUERY_KEY.test(key)) {
-      throw new Error(`${label} may not carry credential query parameters`);
-    }
-    if (
-      secretFindings(value).length > 0 ||
-      HIGH_ENTROPY_QUERY_VALUE.test(value)
-    ) {
-      throw new Error(`${label} contains a secret-like query value`);
-    }
-  }
+  assertCredentialFreeQueryParameters(url, label);
 }
 
 function scopedUrl(base, relativeUrl) {
@@ -135,13 +257,15 @@ function redactCredentialValue(text, credential) {
   return redactText(output);
 }
 
-export async function readConfiguredSource({
+export function describeConfiguredSourceRead({
   source,
   relativeUrl,
   credentialEnv = null,
   env = process.env,
-  outputLimitBytes = 32 * 1024,
+  projectBaseUrl = null,
+  outputLimitBytes = DEFAULT_OUTPUT_LIMIT,
   timeoutMs = 10_000,
+  allowLegacyEnvironment = true,
 }) {
   if (typeof relativeUrl !== "string" || relativeUrl.trim() === "") {
     throw new Error("relativeUrl is required");
@@ -160,15 +284,56 @@ export async function readConfiguredSource({
   ) {
     throw new Error("timeoutMs must be between 1 and 60,000");
   }
-  const configured = configuredBase(source, env);
-  if (
-    credentialEnv !== null &&
-    credentialEnv !== configured.credentialEnv
-  ) {
-    throw new Error(
-      `credentialEnv must match user configuration ${configured.credentialVariable}`,
-    );
-  }
+  const configured = configuredBase(source, env, {
+    projectBaseUrl,
+    credentialEnv,
+    allowLegacyEnvironment,
+  });
+  const requested = scopedUrl(configured.url, relativeUrl);
+  return {
+    schemaVersion: "1.0",
+    source,
+    configuredBy: configured.variable,
+    baseUrl: configured.url.toString(),
+    relativeUrl,
+    endpoint: configured.endpoint,
+    endpointDigest: configured.endpointDigest,
+    requestUrlDigest: sha256(requested.toString()),
+    identifier: safeIdentifier(requested),
+    queryParameterNames: [...new Set(requested.searchParams.keys())].sort(),
+    credentialEnv: configured.credentialEnv,
+    outputLimitBytes: Math.min(outputLimitBytes, DEFAULT_OUTPUT_LIMIT),
+    timeoutMs,
+  };
+}
+
+export async function readConfiguredSource({
+  source,
+  relativeUrl,
+  credentialEnv = null,
+  env = process.env,
+  projectBaseUrl = null,
+  outputLimitBytes = DEFAULT_OUTPUT_LIMIT,
+  timeoutMs = 10_000,
+  fetchImpl = fetch,
+  allowLegacyEnvironment = true,
+}) {
+  const description = describeConfiguredSourceRead({
+    source,
+    relativeUrl,
+    credentialEnv,
+    env,
+    projectBaseUrl,
+    outputLimitBytes,
+    timeoutMs,
+    allowLegacyEnvironment,
+  });
+  const configured = configuredBase(source, env, {
+    projectBaseUrl,
+    credentialEnv,
+    allowLegacyEnvironment,
+  });
+  const effectiveOutputLimitBytes = description.outputLimitBytes;
   const approvedCredentialEnv = configured.credentialEnv;
   const credential = approvedCredentialEnv
     ? env[approvedCredentialEnv] ?? null
@@ -178,12 +343,12 @@ export async function readConfiguredSource({
       `Credential environment variable ${approvedCredentialEnv} is not set`,
     );
   }
-  const requested = scopedUrl(configured.url, relativeUrl);
+  const requested = new URL(relativeUrl, configured.url);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   timer.unref?.();
   try {
-    const response = await fetch(requested, {
+    const response = await fetchImpl(requested, {
       method: "GET",
       redirect: "error",
       signal: controller.signal,
@@ -196,7 +361,7 @@ export async function readConfiguredSource({
       throw new Error(`Configured ${source} source returned HTTP ${response.status}`);
     }
     const declared = Number(response.headers.get("content-length") ?? 0);
-    if (declared > outputLimitBytes) {
+    if (declared > effectiveOutputLimitBytes) {
       throw new Error("Configured source response exceeds the output bound");
     }
     const chunks = [];
@@ -206,7 +371,7 @@ export async function readConfiguredSource({
       const { value, done } = await reader.read();
       if (done) break;
       total += value.byteLength;
-      if (total > outputLimitBytes) {
+      if (total > effectiveOutputLimitBytes) {
         await reader.cancel();
         throw new Error("Configured source response exceeds the output bound");
       }
@@ -217,8 +382,11 @@ export async function readConfiguredSource({
       schemaVersion: "1.0",
       source,
       configuredBy: configured.variable,
-      identifier: safeIdentifier(requested),
-      queryParameterNames: [...new Set(requested.searchParams.keys())].sort(),
+      endpointDigest: configured.endpointDigest,
+      endpoint: configured.endpoint,
+      identifier: description.identifier,
+      queryParameterNames: description.queryParameterNames,
+      requestUrlDigest: description.requestUrlDigest,
       retrievedAt: new Date().toISOString(),
       method: "GET",
       status: response.status,

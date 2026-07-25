@@ -52,6 +52,17 @@ function boundedSessionContext(value, maxBytes = 2_400) {
   return `${bytes.subarray(0, maxBytes - 32).toString("utf8")} [summary truncated]`;
 }
 
+function boundedCheckpointList(value, maxItems = 12, maxLength = 240) {
+  return Array.isArray(value)
+    ? value.slice(-maxItems).map((entry) => {
+        const text = String(entry);
+        return text.length <= maxLength
+          ? text
+          : `${text.slice(0, maxLength - 14)} [truncated]`;
+      })
+    : [];
+}
+
 async function ensureState(authority) {
   let record = await authority.readSigned("state/current.json", {
     required: false,
@@ -360,6 +371,11 @@ async function handleSessionStart(event, context) {
     `Write lease: ${lease.writable ? "held by this session" : "read-only"}.`,
     ...(lease.writable ? [`Session handle: ${attested.sessionHandle}.`] : []),
     `Next legal action: ${state.nextLegalAction}.`,
+    ...(lease.writable
+      ? [
+          "Before continuing, call workflow-authority.mjs resume with this session handle and follow only its signed bounded projection.",
+        ]
+      : []),
   ].join(" ");
   await authority.appendEvent("session-started", {
     sessionId: event.session_id,
@@ -395,6 +411,26 @@ async function checkpointLifecycleEvent(event, context) {
     phase: stateRecord.payload.phase,
     stateSequence: stateRecord.payload.sequence,
     stateDigest: sha256(stateRecord.payload),
+    taskId: stateRecord.payload.taskId ?? null,
+    completedWork: boundedCheckpointList(stateRecord.payload.completedWork),
+    remainingWork: boundedCheckpointList(stateRecord.payload.remainingWork),
+    evidencePaths: boundedCheckpointList(stateRecord.payload.evidencePaths),
+    blocker:
+      typeof stateRecord.payload.blocker === "string"
+        ? stateRecord.payload.blocker.slice(0, 512)
+        : null,
+    nextLegalAction:
+      typeof stateRecord.payload.nextLegalAction === "string"
+        ? stateRecord.payload.nextLegalAction.slice(0, 512)
+        : null,
+    approvedKinds: Object.keys(
+      stateRecord.payload.approvedDigests ?? {},
+    ).sort(),
+    projectFingerprint:
+      stateRecord.payload.fingerprints?.staticVerificationFingerprint ??
+      stateRecord.payload.fingerprints?.expectedWorkingFingerprint ??
+      stateRecord.payload.fingerprints?.onboardingFingerprint ??
+      null,
     checkpointId: randomBytes(18).toString("hex"),
     timestamp: new Date().toISOString(),
     sequence: (prior?.payload.sequence ?? -1) + 1,
@@ -483,6 +519,7 @@ async function handleUserPrompt(event, context) {
         "execution",
         "mutation",
         "source-checkout",
+        "source-read",
         "capabilities",
         "readiness-fact",
         "query",

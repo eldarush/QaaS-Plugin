@@ -17,8 +17,11 @@ Implementation-plan approval binds the canonical plan digest to:
 - forbidden or unchanged paths
 - verification procedure
 
-When the active authority protocol content-binds writes, the planner drafts the
-exact complete target bytes without writing to the project, computes SHA-256
+The signed active authority projection exposes
+`authorityCapabilities.writeContentBinding`. It is `false` in this release, so
+the planner does not draft target bytes or write-digest commands. Only when a
+future active authority reports `true`, the planner drafts the exact complete
+target bytes without writing to the project, computes SHA-256
 over each exact byte sequence, and puts exactly one
 `write <add|modify> <path> sha256:<digest>` command in the approval review for
 every planned write. `add` maps only to `paths.create`; `modify` maps only to
@@ -48,7 +51,7 @@ confirmation that no deletion-based cleanup will run. Its
 Read-only observability requires a third, separate query-plan approval after
 the exact connector has been successfully probed and proven bounded and
 read-only. It binds the execution-plan digest, current fingerprint, one to eight
-exact tool inputs and their digests, configured endpoint selectors,
+exact tool inputs and their digests, exact non-secret endpoints or local selectors,
 credential-variable names, limits, purposes, typed response checks, and
 canonical query-plan digest. The approval is consumed once by the hidden query
 transaction. An unproven connector blocks access; execution approval cannot be

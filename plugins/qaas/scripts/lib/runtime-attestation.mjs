@@ -123,20 +123,23 @@ export async function validateOwnHookConfiguration(pluginRoot) {
       continue;
     }
     const handler = group.hooks[0];
-    const expectedCommand =
-      `/bin/sh "\${CLAUDE_PLUGIN_ROOT}/scripts/hook-launcher.sh" ` +
-      `"\${CLAUDE_PLUGIN_ROOT}/scripts/${expected.script}"`;
+    const expectedArgs = [
+      "${CLAUDE_PLUGIN_ROOT}/scripts/hook-launcher.mjs",
+      `${"${CLAUDE_PLUGIN_ROOT}"}/scripts/${expected.script}`,
+    ];
     if (
       !handler ||
       typeof handler !== "object" ||
       Object.keys(handler).sort(ordinal).join(",") !==
-        ["command", "timeout", "type"].sort(ordinal).join(",") ||
+        ["args", "command", "timeout", "type"].sort(ordinal).join(",") ||
       handler.type !== "command" ||
-      handler.command !== expectedCommand ||
+      handler.command !== "node" ||
+      !Array.isArray(handler.args) ||
+      JSON.stringify(handler.args) !== JSON.stringify(expectedArgs) ||
       handler.timeout !== expected.timeout
     ) {
       errors.push(
-        `${eventName} handler does not match the fixed trusted launcher command`,
+        `${eventName} handler does not match the shell-free trusted launcher command`,
       );
     }
   }

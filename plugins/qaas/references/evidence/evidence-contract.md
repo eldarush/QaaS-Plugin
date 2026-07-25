@@ -14,8 +14,8 @@ For each approved action, retain sanitized:
 Never store raw prompts, credential values, unresolved variable-expanded commands, raw MCP payloads, complete reports, or large logs.
 
 External observability evidence additionally records the canonical query-plan
-and per-query digests, exact approved capability/tool identity, configured
-endpoint selector identifier, credential-variable names, applied bounds,
+and per-query digests, exact approved capability/tool identity, exact
+credential-free endpoint or local selector, credential-variable names, applied bounds,
 typed-check outcomes, redacted excerpt/hash, and one-use approval consumption.
 It never records a resolved secret-bearing endpoint, credential value, or raw
 tool response. Execution evidence alone cannot authorize the query.

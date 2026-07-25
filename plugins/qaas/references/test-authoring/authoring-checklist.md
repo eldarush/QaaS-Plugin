@@ -31,7 +31,10 @@ semantics and constraints are evidenced; approval authorizes it. External
 behavior, contracts, QaaS constructs, and configuration meaning cannot be
 resolved this way.
 
-When active authority content-binds writes, finish these steps before approval:
+Read the signed active authority projection's
+`authorityCapabilities.writeContentBinding`. It is `false` in this release, so
+skip target-byte drafting and write-digest commands. Only if a future active
+authority reports `true`, finish these steps before approval:
 
 - draft each planned file's exact complete target bytes without writing
 - compute SHA-256 over those exact bytes

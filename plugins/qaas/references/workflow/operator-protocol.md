@@ -4,6 +4,59 @@ Use this protocol for every active QaaS workflow. It is intentionally explicit
 for bounded-context models. Do not improvise a helper, argument, approval
 question, phase transition, or success claim.
 
+## Constrained-model start and resume
+
+Apply the [128k constrained-model contract](constrained-model-operation.md).
+Keep one phase active and read only the heading needed below. At session start,
+resume, or post-compaction, run:
+
+```text
+node "${CLAUDE_PLUGIN_ROOT}/scripts/workflow-authority.mjs" resume --session-handle <handle>
+```
+
+Use only its signed `projection`: current opaque fingerprint and package
+handles, bounded progress, recent successful read-evidence handles, staged
+artifacts/topics, blocker, and exact pending action. Do not read protected or
+mirrored state. If it returns an exact pending `AskUserQuestion`, issue only
+that question.
+
+After a bounded project or configured-source read needed for readiness, call
+`resume` and retain the returned evidence handle. Do not invent an evidence
+digest or derive one from tool output.
+
+Before compaction, encode a small progress object and checkpoint it:
+
+```text
+node "${CLAUDE_PLUGIN_ROOT}/scripts/workflow-authority.mjs" checkpoint --session-handle <handle> --content-base64 <contentBase64>
+node "${CLAUDE_PLUGIN_ROOT}/scripts/workflow-authority.mjs" resume --session-handle <handle>
+```
+
+The object may contain only `completedWork`, `remainingWork`, `evidencePaths`,
+`blocker`, and `nextLegalAction`. Each list is bounded to twelve concise
+entries. Checkpoint before compaction; never use a conversation summary as a
+replacement.
+
+## Exact content transport
+
+For context, readiness, plan, execution, query, mutation, capability, source,
+or checkpoint content, call the plugin-provided tool
+`mcp__qaas_local__encode_text` with exactly:
+
+```json
+{"text":"<exact UTF-8 content>"}
+```
+
+The plugin auto-registers this dependency-free local stdio server. It accepts
+only that one field, rejects secret-like text, enforces a 32 KiB UTF-8 limit,
+and returns Base64 with byte length and `transportSha256`. That checksum is
+transport evidence, never the artifact `digest`; authority computes artifact
+digests. Copy only `contentBase64` into the staging command. Never hand-encode
+Base64 or use Bash, a pipe, heredoc, redirection, temporary project file,
+command substitution, or an interpreter snippet for content transport. If the
+tool is unavailable, rejects the content, or the exact artifact cannot fit
+within 32 KiB without dropping required contract detail, checkpoint and stop
+with `exact staging transport unavailable`.
+
 ## Invocation rule
 
 Invoke one helper at a time with the Bash tool using this exact shape:
@@ -25,12 +78,11 @@ acquire a lease, create state, or mint authority, and may run before
 `SessionStart` has produced a handle. Every other helper invocation requires
 the exact current session handle.
 
-Claude Code invokes mandatory hooks through the plugin's fixed
-`scripts/hook-launcher.sh`; do not replace that launcher with `node` from
-`PATH`. The launcher accepts only the three attested hook scripts, requires
-Node 24 at a fixed system location (or the absolute `QAAS_TRUSTED_NODE24`
-location), rejects project/plugin-data runtimes, and fails closed when no
-trusted runtime is available.
+Claude Code invokes mandatory hooks with the exec-form hook contract:
+`node` plus `scripts/hook-launcher.mjs` and one attested hook script argument.
+The launcher accepts only the three attested scripts, reuses the current Node
+executable for its child, requires no shell, and fails closed on launcher or
+child failure. Doctor blocks a project-controlled `PATH` shadow before writes.
 
 ## Doctor
 
@@ -76,11 +128,10 @@ one-question calls.
 
 2. Perform read-only discovery. Ask for explanations and resolve every required
    readiness fact without guessing.
-3. For each core or user-approved custom Markdown topic, encode the complete
-   text, then stage the returned Base64:
+3. For each core or user-approved custom Markdown topic, use the exact content
+   transport above, then stage the returned Base64:
 
    ```text
-   node "${CLAUDE_PLUGIN_ROOT}/scripts/workflow-authority.mjs" encode --session-handle <handle> --text <text>
    node "${CLAUDE_PLUGIN_ROOT}/scripts/workflow-authority.mjs" stage-context --session-handle <handle> --path .claude/qaas/<topic>.md --content-base64 <contentBase64>
    ```
 
@@ -98,6 +149,17 @@ one-question calls.
    ```text
    node "${CLAUDE_PLUGIN_ROOT}/scripts/workflow-authority.mjs" stage --session-handle <handle> --kind readiness --content-base64 <contentBase64>
    ```
+
+   A `user_confirmed` or `not_applicable` domain first requires its exact
+   registered fact:
+
+   ```text
+   node "${CLAUDE_PLUGIN_ROOT}/scripts/workflow-authority.mjs" prepare-readiness-fact --session-handle <handle> --domain <domain> --status <user_confirmed|not_applicable> --summary-base64 <contentBase64>
+   ```
+
+   Apply the review transaction to the returned single question. Use only
+   successful read-evidence handles returned by `resume` for `evidenced`
+   domains.
 
 6. Run the review transaction with:
 
@@ -130,17 +192,45 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/docs-read.mjs" --session-handle <handle> --q
 An optional `--relative-url <stable-id>` may narrow a known page. `unsupported`
 means stop and ask; it never means infer.
 
-## Approved reference-source checkout
+## Approved bounded source GET
 
-Prefer existing project/local content and bounded GET-only capabilities. Only
-during `DISCOVERING`, when understanding requires repository semantics, stage
-one complete `source-checkout.schema.json` document. Its `source` is exactly
-`modules`, `common-hooks`, or `reference-project`; its URL and credential
-selector must exactly match that source's configured environment-variable
-names. The ref and commit are immutable. Encode and stage it:
+Prefer current project/local content. If one exact file or API response is
+needed from a user-supplied GitLab, modules, or Common Hooks HTTP(S) source,
+use a signed one-use source-read transaction. First prepare the complete
+request without contacting the source:
 
 ```text
-node "${CLAUDE_PLUGIN_ROOT}/scripts/workflow-authority.mjs" encode --session-handle <handle> --text <complete-source-checkout-json>
+node "${CLAUDE_PLUGIN_ROOT}/scripts/workflow-authority.mjs" prepare --session-handle <handle> --kind source-read --source <gitlab|modules|common-hooks> --base-url <exact-user-supplied-base-url> --relative-url <exact-relative-path-and-query> [--credential-env <user-selected-variable-name>] [--output-limit-bytes <1..16384>] [--timeout-ms <1..60000>]
+```
+
+Apply the returned review transaction. It displays and binds the exact base
+URL, relative path and non-secret query, endpoint/request digests,
+credential-variable name, bounds, project, task, and phase. The signed
+challenge additionally binds the active session and lease. After exact
+approval, execute the same argument vector:
+
+```text
+node "${CLAUDE_PLUGIN_ROOT}/scripts/source-read.mjs" --session-handle <handle> --source <gitlab|modules|common-hooks> --base-url <exact-user-supplied-base-url> --relative-url <exact-relative-path-and-query> [--credential-env <same-variable-name>] [--output-limit-bytes <same-value>] [--timeout-ms <same-value>]
+```
+
+The helper consumes approval before the network request. Replay fails. Any
+changed source, path/query, credential selector, or bound fails without
+contacting the source and without consuming a still-matching approval.
+Credential values may exist only in the selected environment variable; signed
+or high-entropy query values are rejected. This is not a general HTTP client.
+
+## Approved reference-source checkout
+
+Prefer existing project/local content and the approved bounded GET above. Only
+during `DISCOVERING`, when understanding requires repository semantics, stage
+one complete `source-checkout.schema.json` document. Its `source` is exactly
+`modules`, `common-hooks`, or `reference-project`. Put the exact user-reviewed
+URL directly in `repositoryUrl`; no URL environment setup is required. For a
+private source, `credentialEnv` contains only the user-selected `GLAB_TOKEN` or
+`GITLAB_TOKEN` variable name, never its value. The ref and commit are immutable.
+Use the exact content transport, then stage it:
+
+```text
 node "${CLAUDE_PLUGIN_ROOT}/scripts/workflow-authority.mjs" stage --session-handle <handle> --kind source-checkout --content-base64 <contentBase64>
 node "${CLAUDE_PLUGIN_ROOT}/scripts/workflow-authority.mjs" prepare --session-handle <handle> --kind source-checkout
 ```
@@ -160,9 +250,9 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/source-read.mjs" --session-handle <handle> -
 node "${CLAUDE_PLUGIN_ROOT}/scripts/source-read.mjs" --session-handle <handle> --source <source> --checkout-id <checkout-id> --path <safe-relative-path>
 ```
 
-Use `git` without a credential selector when the configured source is public or
+Use `git` without a credential selector when the reviewed source is public or
 an existing credential helper suffices. A private checkout may use only the
-configured `GLAB_TOKEN` or `GITLAB_TOKEN` selector with the `glab` transport;
+user-selected `GLAB_TOKEN` or `GITLAB_TOKEN` selector with the `glab` transport;
 never expose its value. TLS verification stays enabled. If and only if the
 exact HTTPS Git source cannot otherwise be read, record the user's explicit
 one-source, one-operation risk acknowledgement in the staged document; the
@@ -176,8 +266,13 @@ From `PROJECT_READY` or `VERIFIED`:
 node "${CLAUDE_PLUGIN_ROOT}/scripts/workflow-authority.mjs" begin-task --session-handle <handle> --task-id <stable-task-id>
 ```
 
+Use the returned `projectFingerprintDigest`, `contextDigest`, and
+`packageSnapshotDigest` verbatim. Never retrieve them from project state.
+
 Interview and research until nothing required is unknown or contradicted. Encode
-one complete `task-plan.schema.json` document and stage it:
+one complete `task-plan.schema.json` document without a `digest` field and stage
+it. The authority computes and inserts the canonical artifact digest; never use
+the local encoder's `transportSha256` as an artifact digest:
 
 Immediately before staging, perform dependency closure. Map every selected QaaS
 API, type, hook, module, and executable to current documentation, its providing
@@ -287,7 +382,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/workflow-authority.mjs" prepare --session-ha
 ```
 
 Apply the review transaction. The human-readable review must show every exact
-provider, capability ID, tool, bounded input, configured endpoint selector,
+provider, capability ID, tool, bounded input, exact non-secret endpoint or local selector,
 credential-variable name, purpose, limit, and typed response check. Then and
 only then consume the approval once:
 

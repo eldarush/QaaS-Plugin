@@ -28,6 +28,7 @@ const SCHEMAS = Object.freeze([
 ]);
 const REQUIRED_SCRIPTS = Object.freeze([
   "doctor.mjs",
+  "hook-launcher.mjs",
   "validate-readiness.mjs",
   "validate-plan.mjs",
   "validate-execution-plan.mjs",
@@ -38,6 +39,7 @@ const REQUIRED_SCRIPTS = Object.freeze([
   "posttool-ledger.mjs",
   "session-state.mjs",
   "workflow-authority.mjs",
+  "local-encode-mcp.mjs",
   "run-approved.mjs",
   "query-approved.mjs",
   "docs-read.mjs",
@@ -71,6 +73,16 @@ async function jsonFile(target, errors, label) {
     errors.push(`${label} is invalid JSON: ${error.message}`);
     return null;
   }
+}
+
+function exactKeys(value, keys) {
+  return (
+    value &&
+    !Array.isArray(value) &&
+    typeof value === "object" &&
+    JSON.stringify(Object.keys(value).sort()) ===
+      JSON.stringify([...keys].sort())
+  );
 }
 
 function frontmatter(text) {
@@ -133,6 +145,31 @@ export async function validatePlugin({
   }
   if (manifest?.name !== "qaas") {
     errors.push("plugin manifest name must be qaas");
+  }
+  const mcpConfiguration = await jsonFile(
+    path.join(pluginRoot, ".mcp.json"),
+    errors,
+    ".mcp.json",
+  );
+  const localMcp = mcpConfiguration?.mcpServers?.qaas_local;
+  if (!exactKeys(mcpConfiguration, ["mcpServers"])) {
+    errors.push(".mcp.json must contain only mcpServers");
+  }
+  if (!exactKeys(mcpConfiguration?.mcpServers, ["qaas_local"])) {
+    errors.push(".mcp.json must register exactly the qaas_local server");
+  }
+  if (
+    !exactKeys(localMcp, ["command", "args", "cwd"]) ||
+    localMcp?.command !== "node" ||
+    JSON.stringify(localMcp?.args) !==
+      JSON.stringify([
+        "${CLAUDE_PLUGIN_ROOT}/scripts/local-encode-mcp.mjs",
+      ]) ||
+    localMcp?.cwd !== "${CLAUDE_PLUGIN_ROOT}"
+  ) {
+    errors.push(
+      ".mcp.json qaas_local must be the fixed local stdio encoder configuration",
+    );
   }
 
   const sourceRepositoryCandidate = path.resolve(pluginRoot, "..", "..");
@@ -211,6 +248,24 @@ export async function validatePlugin({
         "package, plugin, marketplace, and version.json versions must match",
       );
     }
+    if (packageDocument?.engines?.node !== undefined) {
+      errors.push("package.json must not pin a Node.js engine");
+    }
+    for (const field of [
+      "dependencies",
+      "devDependencies",
+      "optionalDependencies",
+      "peerDependencies",
+    ]) {
+      if (
+        packageDocument?.[field] &&
+        Object.keys(packageDocument[field]).length > 0
+      ) {
+        errors.push(
+          `package.json ${field} must stay empty for the dependency-free runtime`,
+        );
+      }
+    }
     if (
       marketplace?.plugins?.[0]?.name !== "qaas" ||
       marketplace?.plugins?.[0]?.source !== "./plugins/qaas"
@@ -275,6 +330,14 @@ export async function validatePlugin({
       errors.push(`skill ${skillName} lacks a description`);
     }
     if (metadata["user-invocable"] !== false) visible.push(skillName);
+    if (
+      skillName === "qaas-workflow" &&
+      metadata["allowed-tools"] !== "mcp__qaas_local__encode_text"
+    ) {
+      errors.push(
+        "qaas-workflow must allow only mcp__qaas_local__encode_text",
+      );
+    }
     if (PUBLIC_SKILLS.includes(skillName)) {
       if (metadata["disable-model-invocation"] !== true) {
         errors.push(`public skill ${skillName} must disable model invocation`);
@@ -361,7 +424,7 @@ export async function validatePlugin({
     packagedBundleChecksApplied: packagedBundlePresent,
     version,
     visibleSkills: visible.sort(),
-    targetRuntime: "Claude Code 2.1.201",
+    targetRuntime: "Claude Code >=2.1.180",
   };
 }
 

@@ -1,22 +1,45 @@
 # Air-gap configuration
 
-The plugin performs no online installation. Prepare and review every required
-artifact on a connected system, transfer it through the organization's approved
-process, and configure only local/internal sources in the disconnected
-environment.
+The plugin performs no online installation and needs no endpoint setup for
+normal startup or onboarding. Prepare and review every required artifact on a
+connected system, transfer it through the organization's approved process, and
+keep the disconnected runtime on approved sources.
+
+## Network contract
+
+The distribution contains two centrally reviewed endpoints:
+
+| Capability | Built-in endpoint |
+| --- | --- |
+| Current QaaS documentation | `https://docs.qaas.online/` |
+| QaaS Artifactory reads | `https://jfrog.com/artifactory/` |
+
+They are runtime-immutable and have no environment-variable overrides. The
+plugin contacts neither endpoint automatically or in the background. Loading,
+hooks, doctor, and general conversation do not contact them. Onboarding may
+issue an explicit task-relevant documentation query when a missing QaaS fact
+requires one. Every bounded documentation or Artifactory response is capped at
+16 KiB and recorded with endpoint and excerpt digests.
+
+An organization-specific disconnected distribution may replace these values
+only as a reviewed distribution-build change in
+`plugins/qaas/scripts/lib/built-in-endpoints.mjs`. Do not patch them per
+project, add a runtime override, or prompt users for replacements.
+
+The plugin does not perform background network discovery or general-internet
+search. Every optional external read requires an exact, user-approved,
+task-relevant source.
 
 ## Transfer set
 
 The minimum set is:
 
 - A pinned QaaS plugin tag or release ZIP, its SHA-256 checksum, and manifest.
-- Claude Code 2.1.201 and Node.js 24 already installed by the organization.
-- On Windows, a reviewed Git for Windows installation (or safe equivalent)
-  whose fixed shell can execute `/bin/sh`; the hook configuration depends on
-  that command and doctor verifies it with a real process probe.
+- Claude Code >=2.1.180 and an available Node.js runtime already installed by
+  the organization. The plugin does not pin an exact Node major.
+- Git only when the project or an approved reference checkout needs it.
 - The .NET SDK required by the test project.
-- All QaaS and project NuGet packages in the internal feed/cache.
-- Current QaaS documentation as an internal URL and/or approved ZIM artifact.
+- All QaaS and project NuGet packages in the project's configured feed/cache.
 - Any Common Hooks packages/source and YAML modules used by the project.
 - The test repository and, when relevant, a similar reference project.
 
@@ -38,164 +61,83 @@ Compare the printed digest to the checksum file through the organization's
 trusted channel. The `.manifest.json` beside a release bundle contains a digest
 for every bundled file. Use the equivalent `sha256sum <bundle>` on Linux.
 
-## Configure non-secret sources
+## Optional project-specific sources
 
-Set only location variables globally or for the Claude Code process:
+Do not configure a docs URL, Artifactory URL, or NuGet feed URL. NuGet sources
+are derived from the target project's `NuGet.Config`, project/props/targets
+restore properties, and restore evidence. If that metadata has no usable HTTP
+source or contains several candidates, the plugin asks only for the exact
+project-specific source selection.
 
-```powershell
-$env:QAAS_DOCS_PRIMARY_URL = "https://docs.internal.example/qaas/"
-$env:QAAS_DOCS_SECONDARY_URL = "https://docs-backup.internal.example/qaas/"
-$env:QAAS_DOCS_ZIM_PATH = "<local-path-to-qaas-docs.zim>"
-$env:QAAS_DOCS_MCP_URL = "http://127.0.0.1:<approved-port>/mcp"
-$env:QAAS_DOCS_MCP_CREDENTIAL_ENV = "QAAS_DOCS_MCP_TOKEN"
-$env:QAAS_GITLAB_URL = "https://gitlab.internal.example/"
-$env:QAAS_GITLAB_CREDENTIAL_ENV = "GITLAB_HTTP_TOKEN"
-$env:QAAS_ARTIFACTORY_URL = "https://artifactory.internal.example/"
-$env:QAAS_ARTIFACTORY_CREDENTIAL_ENV = "ARTIFACTORY_HTTP_TOKEN"
-$env:QAAS_NUGET_FEED_URL = "https://artifactory.internal.example/api/nuget/qaas"
-$env:QAAS_NUGET_CREDENTIAL_ENV = "NUGET_HTTP_TOKEN"
-$env:QAAS_MODULES_REPO_URL = "https://gitlab.internal.example/qa/modules"
-$env:QAAS_MODULES_CREDENTIAL_ENV = "GLAB_TOKEN"
-$env:QAAS_COMMON_HOOKS_REPO_URL = "https://gitlab.internal.example/qa/common-hooks"
-$env:QAAS_COMMON_HOOKS_CREDENTIAL_ENV = "GLAB_TOKEN"
-$env:QAAS_REFERENCE_PROJECT_REPO_URL = "https://gitlab.internal.example/qa/reference-tests"
-$env:QAAS_REFERENCE_PROJECT_CREDENTIAL_ENV = "GLAB_TOKEN"
-$env:QAAS_TRUSTED_NODE24 = "C:\Program Files\nodejs\node.exe"
-```
+GitLab, module, and Common Hooks bounded HTTP reads take the exact approved
+source through a signed, one-use source-read review. The workflow requests that
+URL only when the source is relevant, and binds the base URL, relative
+path/query, task/session, endpoint/request digests, output bound, and timeout
+before access. It may also pass `--credential-env` with the name of a separate
+credential variable; the token itself never enters the command or project
+context. Credential-like query keys and high-entropy query values are rejected.
+NuGet may use the same credential-name input, but its URL still comes only from
+project metadata.
 
-Linux:
+Reference-project checkout and observability locations follow the same
+task-relevant rule: use the exact user-approved source in the one operation
+that needs it, bind it into approval/provenance, and do not require global
+preconfiguration. Leave irrelevant sources absent.
 
-```bash
-export QAAS_DOCS_PRIMARY_URL="https://docs.internal.example/qaas/"
-export QAAS_DOCS_ZIM_PATH="<local-path-to-qaas-docs.zim>"
-export QAAS_DOCS_MCP_URL="http://127.0.0.1:<approved-port>/mcp"
-export QAAS_DOCS_MCP_CREDENTIAL_ENV="QAAS_DOCS_MCP_TOKEN"
-export QAAS_GITLAB_URL="https://gitlab.internal.example/"
-export QAAS_GITLAB_CREDENTIAL_ENV="GITLAB_HTTP_TOKEN"
-export QAAS_ARTIFACTORY_URL="https://artifactory.internal.example/"
-export QAAS_ARTIFACTORY_CREDENTIAL_ENV="ARTIFACTORY_HTTP_TOKEN"
-export QAAS_NUGET_FEED_URL="https://artifactory.internal.example/api/nuget/qaas"
-export QAAS_NUGET_CREDENTIAL_ENV="NUGET_HTTP_TOKEN"
-export QAAS_MODULES_REPO_URL="https://gitlab.internal.example/qa/modules"
-export QAAS_MODULES_CREDENTIAL_ENV="GLAB_TOKEN"
-export QAAS_COMMON_HOOKS_REPO_URL="https://gitlab.internal.example/qa/common-hooks"
-export QAAS_COMMON_HOOKS_CREDENTIAL_ENV="GLAB_TOKEN"
-export QAAS_REFERENCE_PROJECT_REPO_URL="https://gitlab.internal.example/qa/reference-tests"
-export QAAS_REFERENCE_PROJECT_CREDENTIAL_ENV="GLAB_TOKEN"
-export QAAS_TRUSTED_NODE24="/usr/bin/node"
-```
+## Optional offline documentation mirror
 
-The example hostnames are placeholders. Onboarding records the approved
-non-secret location and variable names that actually apply.
+The built-in docs endpoint requires no setup. A distribution administrator may
+also provision a reviewed local ZIM artifact or read-only OpenZIM-compatible
+MCP capability for a disconnected deployment. This is optional infrastructure,
+not an onboarding question and not a runtime replacement for the built-in
+endpoint.
 
-Do not place passwords, tokens, private keys, or credential-bearing URLs in
-these variables or in project context. Put a credential in a separately named
-environment variable or approved credential helper, then tell the plugin only
-that variable's name. Source-checkout credential selectors are intentionally
-restricted to `GLAB_TOKEN` or `GITLAB_TOKEN`; leave the selector unset for
-public sources or Git operations that use an existing credential helper.
+The MCP capability must be pinned, expose only bounded search/read operations,
+and use an exact approved local or internal endpoint. If a preloaded container
+is used:
 
-`QAAS_TRUSTED_NODE24` is optional. If set, it must be an absolute path to an
-organization-reviewed Node 24 executable outside the project, plugin scripts,
-and plugin-data directories. Mandatory hooks otherwise probe only fixed system
-locations and fail closed; they never execute a project-local or `PATH`-shadowed
-Node binary.
-
-## Offline QaaS documentation
-
-An approved OpenZIM-compatible MCP server can expose the local QaaS ZIM through
-read-only search/read tools. Configure the server in Claude Code according to
-its pinned version and your organization's MCP policy.
-
-For deterministic plugin retrieval, expose the reviewed server through an
-approved local/internal Streamable HTTP endpoint in `QAAS_DOCS_MCP_URL`.
-`QAAS_DOCS_MCP_CREDENTIAL_ENV`, when needed, contains only the name of the
-separate bearer-token environment variable. The bounded helper validates the
-signed capability registry against the server's live tool schema, applies
-timeouts and byte/item limits, and falls back to the configured documentation
-URLs when the MCP source is unavailable. It never persists or prints the token.
-
-If the chosen server is distributed as a preloaded container image:
-
-1. Verify the image digest and license on the connected side.
-2. Transfer/load the pinned image and ZIM without allowing a network pull.
-3. Mount the directory containing the ZIM read-only.
-4. Bind a Streamable HTTP endpoint only to an approved local/internal
-   interface, or place a reviewed stdio-to-HTTP adapter in front of a
-   stdio-only server.
+1. Verify its image digest and license on the connected side.
+2. Transfer the image and ZIM without allowing a network pull.
+3. Mount the ZIM directory read-only.
+4. Bind only an approved local/internal interface.
 5. Grant only search/read tools.
-6. Run `/qaas:doctor` and a known-page query.
+6. Run `/qaas:doctor` and one explicit known-page query.
 
-A generic configuration shape is:
-
-```json
-{
-  "mcpServers": {
-    "qaas-docs": {
-      "command": "docker",
-      "args": [
-        "run",
-        "-i",
-        "-v",
-        "<zim-directory>:/data:ro",
-        "<approved-image-by-digest>",
-        "--mode",
-        "advanced"
-      ]
-    }
-  }
-}
-```
-
-Use the exact arguments documented by the selected, reviewed server. The plugin
-does not add `--rm`, remove containers, or perform cleanup. A user may operate a
-persistent container according to local policy.
-
-When MCP is unavailable, configure the internal HTTP documentation URL. When
-both exist, onboarding records which is primary and proves that it matches the
-project's installed QaaS packages. A local path by itself does not prove version
-compatibility; provenance/checksum metadata is required.
+The plugin does not add destructive container flags, remove containers, or
+perform cleanup. A local artifact by itself does not prove version
+compatibility; retain its checksum and provenance.
 
 ## NuGet, Artifactory, modules, and Common Hooks
 
-The project remains the source of truth for `NuGet.Config`, package sources, and
-package references. For an upgrade, the plugin reads internal feed metadata and
-does not hard-code a “latest” version.
+The project remains the source of truth for package sources, package
+references, and lock/restore evidence. For an upgrade, the plugin reads exact
+project-derived feed metadata and never hard-codes a “latest” version.
 
-Modules may be:
+Modules may be existing local YAML, artifacts retrieved through the built-in
+Artifactory endpoint, or files in an exact approved module repository. Common
+Hooks may be source already in the project, an installed `QaaS.Common.*`
+package, or a package paired with its exact source repository.
 
-- Existing local YAML.
-- YAML artifacts retrieved from Artifactory.
-- Files in the approved module source repository.
-
-Common Hooks may be:
-
-- Source already in the project.
-- An installed `QaaS.Common.*` package.
-- A package from the internal feed, preferably paired with its source
-  repository.
-
-Onboarding asks for both repository locations or explicit confirmation that
-each facility is unused. A package name alone is not enough to understand a
-custom hook's configuration record and behavior.
+Ask for module or Common Hooks locations only when the project uses that
+facility. A package name alone is not enough to establish a custom hook's
+configuration record and behavior.
 
 ## Internal TLS
 
-Install the internal CA where possible. If an exact GitLab source works only
-with certificate verification disabled, the user must acknowledge that risk
-for a single source-access operation. Scope it to the invocation:
+Install the internal CA where possible. If one exact Git source works only with
+certificate verification disabled, the user must acknowledge that risk for a
+single source-access operation:
 
 ```powershell
-git -c http.sslVerify=false clone "<approved-source>" "<approved-destination>"
+git -c http.sslVerify=false clone "<exact-approved-source>" "<approved-destination>"
 ```
 
-Never set `http.sslVerify=false` globally. Never put credentials in the URL.
-Source access that creates a checkout is a write and needs one reviewed approval
-covering source, pinned ref, destination, credential-variable names, and TLS
-risk. The plugin creates only a protected bare shallow checkout at the exact
-approved commit, disables lazy fetch, submodules, LFS, and working-tree hooks,
-consumes the approval once, and exposes content only through bounded inventory
-and single-file reads. It never runs `git pull`.
+Never disable TLS verification globally or put credentials in the URL.
+Checkout creation requires one reviewed approval binding the exact source,
+pinned ref, destination, credential-variable names, and TLS risk. The plugin
+creates only a protected bare shallow checkout, disables lazy fetch,
+submodules, LFS, and working-tree hooks, and exposes content only through
+bounded inventory and single-file reads.
 
 ## Validation checklist
 
@@ -203,11 +145,13 @@ Run `/qaas:doctor` and confirm:
 
 - The plugin version and active hook digest.
 - Node and .NET are available.
-- Required project packages restore from approved sources.
-- A current QaaS documentation query succeeds.
-- Optional tools are either available or explicitly irrelevant.
-- Common Hooks/module sources are reachable when the project uses them.
+- Startup and doctor generated no network request.
+- Required project packages restore from project-configured sources.
+- One explicit current QaaS documentation query succeeds when egress is
+  available.
+- Optional tools and sources are available only when the current task needs
+  them.
 - No credential value appears in `.claude/`, logs, commands, or evidence.
 
-Target-runtime acceptance must be performed on Claude Code 2.1.201 with the
+Target-runtime acceptance must be performed on Claude Code >=2.1.180 with the
 provided MiniMax M2.7 gateway before organizational rollout.

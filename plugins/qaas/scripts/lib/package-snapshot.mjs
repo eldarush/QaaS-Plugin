@@ -24,7 +24,7 @@ function isPackageMetadata(relative) {
   const basename = path.posix.basename(relative).toLowerCase();
   return (
     PACKAGE_FILES.has(basename) ||
-    /\.(?:csproj|fsproj|vbproj|sln|slnx)$/iu.test(basename)
+    /\.(?:csproj|fsproj|vbproj|props|targets|sln|slnx)$/iu.test(basename)
   );
 }
 
@@ -49,27 +49,165 @@ function packageReferences(text) {
   );
 }
 
-function configuredFeedProof(env) {
-  const value = env.QAAS_NUGET_FEED_URL;
-  if (!value) return null;
-  const url = new URL(value);
-  if (
-    !["https:", "http:"].includes(url.protocol) ||
-    url.username ||
-    url.password ||
-    url.search ||
-    url.hash
-  ) {
-    throw new Error(
-      "QAAS_NUGET_FEED_URL must be credential-free HTTP(S) without query or fragment",
+function decodeXmlAttribute(value) {
+  return String(value)
+    .replaceAll("&amp;", "&")
+    .replaceAll("&quot;", '"')
+    .replaceAll("&apos;", "'")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">");
+}
+
+function xmlAttributes(text) {
+  const attributes = new Map();
+  const attribute =
+    /([A-Za-z_][A-Za-z0-9_.:-]*)\s*=\s*(?:"([^"]*)"|'([^']*)')/gu;
+  for (const match of text.matchAll(attribute)) {
+    attributes.set(
+      match[1].toLowerCase(),
+      decodeXmlAttribute(match[2] ?? match[3]),
     );
   }
+  return attributes;
+}
+
+function packageSourceRecord({
+  file,
+  name,
+  value,
+  declaredBy,
+}) {
+  const source = decodeXmlAttribute(value).trim();
+  if (!source) return null;
+  if (source.includes("$(") || source.includes("%(")) {
+    return {
+      file,
+      name,
+      declaredBy,
+      kind: "unresolved-project-expression",
+      valueDigest: sha256(source),
+    };
+  }
+  let url;
+  try {
+    url = new URL(source);
+  } catch {
+    return {
+      file,
+      name,
+      declaredBy,
+      kind: "local-or-relative",
+      value: source.replaceAll("\\", "/"),
+      valueDigest: sha256(source),
+    };
+  }
+  if (!["http:", "https:"].includes(url.protocol)) {
+    return {
+      file,
+      name,
+      declaredBy,
+      kind: "local-or-relative",
+      value: source,
+      valueDigest: sha256(source),
+    };
+  }
+  if (url.username || url.password) {
+    throw new Error(`Package source may not contain credentials: ${file}`);
+  }
   return {
-    configuredBy: "QAAS_NUGET_FEED_URL",
+    file,
+    name,
+    declaredBy,
+    kind: "http",
+    url: url.toString(),
+    urlDigest: sha256(url.toString()),
     protocol: url.protocol,
     origin: url.origin,
     pathDigest: sha256(url.pathname),
   };
+}
+
+function packageSources(relative, text) {
+  const sources = [];
+  const basename = path.posix.basename(relative).toLowerCase();
+  if (basename === "nuget.config") {
+    const packageSourcesBlock =
+      /<packageSources\b[^>]*>([\s\S]*?)<\/packageSources>/iu.exec(text)?.[1] ??
+      "";
+    const add = /<add\b([^>]*)\/?>/giu;
+    for (const match of packageSourcesBlock.matchAll(add)) {
+      const attributes = xmlAttributes(match[1]);
+      const key = attributes.get("key");
+      const value = attributes.get("value");
+      if (!key || !value) continue;
+      const record = packageSourceRecord({
+        file: relative,
+        name: key.trim(),
+        value,
+        declaredBy: "NuGet.Config/packageSources",
+      });
+      if (record) sources.push(record);
+    }
+  }
+  if (/\.(?:csproj|fsproj|vbproj|props|targets)$/iu.test(relative)) {
+    const restoreProperty =
+      /<(RestoreSources|RestoreAdditionalProjectSources)\b[^>]*>([\s\S]*?)<\/\1>/giu;
+    for (const match of text.matchAll(restoreProperty)) {
+      const values = decodeXmlAttribute(match[2])
+        .split(";")
+        .map((entry) => entry.trim())
+        .filter(Boolean);
+      values.forEach((value, index) => {
+        const record = packageSourceRecord({
+          file: relative,
+          name: `${match[1]}:${index + 1}`,
+          value,
+          declaredBy: `MSBuild/${match[1]}`,
+        });
+        if (record) sources.push(record);
+      });
+    }
+  }
+  return sources;
+}
+
+function singleConfiguredFeed(sources) {
+  const remote = sources.filter((source) => source.kind === "http");
+  if (remote.length !== 1) return null;
+  const [source] = remote;
+  return {
+    configuredBy: source.declaredBy,
+    sourceName: source.name,
+    file: source.file,
+    protocol: source.protocol,
+    origin: source.origin,
+    pathDigest: source.pathDigest,
+    urlDigest: source.urlDigest,
+  };
+}
+
+export function resolveProjectPackageSource(snapshot, selector = null) {
+  const remote = (snapshot?.packageSources ?? []).filter(
+    (source) => source.kind === "http",
+  );
+  const matches =
+    selector === null
+      ? remote
+      : remote.filter(
+          (source) =>
+            source.name === selector ||
+            source.urlDigest === selector ||
+            source.url === selector,
+        );
+  if (matches.length === 1) return matches[0];
+  if (matches.length === 0) {
+    throw new Error(
+      "No matching HTTP NuGet source is evidenced by current project package metadata",
+    );
+  }
+  throw new Error(
+    "Multiple project NuGet sources are evidenced; select one project-specific source",
+  );
 }
 
 export async function computePackageSnapshot({
@@ -108,6 +246,7 @@ export async function computePackageSnapshot({
   let totalBytes = 0;
   const files = [];
   const graph = [];
+  const discoveredPackageSources = [];
   for (const candidate of candidates.sort((left, right) =>
     left.relative.localeCompare(right.relative, "en"),
   )) {
@@ -120,23 +259,41 @@ export async function computePackageSnapshot({
       throw new Error("Package metadata bytes exceed the snapshot bound");
     }
     const bytes = await readFile(candidate.target);
+    const text = bytes.toString("utf8");
     files.push({
       path: candidate.relative,
       size: bytes.byteLength,
       sha256: sha256(bytes),
     });
-    if (/\.(?:csproj|fsproj|vbproj|props)$/iu.test(candidate.relative)) {
-      for (const reference of packageReferences(bytes.toString("utf8"))) {
+    if (/\.(?:csproj|fsproj|vbproj|props|targets)$/iu.test(candidate.relative)) {
+      for (const reference of packageReferences(text)) {
         graph.push({ file: candidate.relative, ...reference });
       }
     }
+    discoveredPackageSources.push(
+      ...packageSources(candidate.relative, text),
+    );
   }
+  const normalizedPackageSources = [
+    ...new Map(
+      discoveredPackageSources.map((source) => [
+        canonicalDigest(source),
+        source,
+      ]),
+    ).values(),
+  ].sort((left, right) =>
+    `${left.file}:${left.name}`.localeCompare(
+      `${right.file}:${right.name}`,
+      "en",
+    ),
+  );
   const snapshot = {
     schemaVersion: "1.0",
     projectRootDigest: sha256(canonicalRoot),
     files,
     graph,
-    configuredFeed: configuredFeedProof(env),
+    packageSources: normalizedPackageSources,
+    configuredFeed: singleConfiguredFeed(normalizedPackageSources),
     bounds: {
       fileCount: files.length,
       totalBytes,

@@ -50,9 +50,44 @@ for (const relativePath of relativeFiles) {
   if (
     /^licen[cs]e(?:\.|$)/iu.test(basename) ||
     relativePath.startsWith("dist/") ||
+    relativePath.split("/").includes("node_modules") ||
+    [
+      "package-lock.json",
+      "npm-shrinkwrap.json",
+      "yarn.lock",
+      "pnpm-lock.yaml",
+      "bun.lock",
+      "bun.lockb",
+    ].includes(basename) ||
     relativePath.includes(["QaaS", "Plugin", "Lab"].join("-"))
   ) {
     throw new Error(`Disallowed package entry: ${relativePath}`);
+  }
+}
+
+function assertDependencyFreeJavaScript(relativePath, data) {
+  if (!/\.(?:mjs|js|cjs)$/iu.test(relativePath)) return;
+  const text = data.toString("utf8");
+  const patterns = [
+    /\b(?:import|export)\s+(?:[\s\S]*?\s+from\s+)?["']([^"']+)["']/gu,
+    /\bimport\s*\(\s*["']([^"']+)["']\s*\)/gu,
+    /\brequire\s*\(\s*["']([^"']+)["']\s*\)/gu,
+  ];
+  for (const pattern of patterns) {
+    for (const match of text.matchAll(pattern)) {
+      const specifier = match[1];
+      if (
+        !specifier.startsWith("node:") &&
+        !specifier.startsWith("./") &&
+        !specifier.startsWith("../") &&
+        !specifier.startsWith("/") &&
+        !specifier.startsWith("file:")
+      ) {
+        throw new Error(
+          `Third-party module import is not packageable: ${relativePath} -> ${specifier}`,
+        );
+      }
+    }
   }
 }
 
@@ -119,6 +154,7 @@ let currentOffset = 0;
 
 for (const relativePath of relativeFiles) {
   const data = fs.readFileSync(path.join(repositoryRoot, ...relativePath.split("/")));
+  assertDependencyFreeJavaScript(relativePath, data);
   const checksum = crc32(data);
   const header = localHeader(relativePath, data, checksum);
   localParts.push(header, data);

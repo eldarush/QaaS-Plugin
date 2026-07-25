@@ -1,6 +1,6 @@
 # Target acceptance and owner handoff
 
-The public `v0.1.0` release is a Codex-proxy preview. Complete this checklist in
+The public `v0.2.0` release is a Codex-proxy preview. Complete this checklist in
 the actual air-gapped environment before declaring the plugin generally
 available.
 
@@ -24,12 +24,12 @@ in the handoff.
 ## Workstation preflight
 
 - [ ] Windows 10/11 target workstation is representative.
-- [ ] Claude Code reports exactly the organizational baseline (initially
-      2.1.201).
+- [ ] Claude Code reports the organizational baseline (at least 2.1.180).
 - [ ] The configured provider reports MiniMax M2.7 and the 128k context limit.
-- [ ] Node.js 24 is available (record exact version).
-- [ ] On Windows, `/qaas:doctor` proves the fixed Git Bash (or reviewed
-      equivalent) can execute the mandatory `/bin/sh` hook command.
+- [ ] Node.js is available (record the tested version; the plugin has no exact
+      major pin).
+- [ ] `/qaas:doctor` proves the exec-form Node hook launcher is available
+      without requiring a shell.
 - [ ] Required .NET SDK and internal QaaS packages are available.
 - [ ] No acceptance step installs an internet package.
 - [ ] The pinned plugin checksum matches the reviewed release.
@@ -47,7 +47,7 @@ in the handoff.
 - [ ] A mismatched docs/package version is rejected or clarified.
 - [ ] Existing local checkout, MCP, `glab`, `git`, and `curl` preference order is
       honored using only tools actually installed.
-- [ ] A signed reference checkout binds the configured source, immutable commit,
+- [ ] A signed reference checkout binds the reviewed exact source, immutable commit,
       executable digest, credential selector, and TLS choice; its approval is
       one-use and content is accessible only through bounded reads.
 - [ ] Project/user Git configuration cannot add hooks, lazy fetch, submodules,
@@ -104,7 +104,7 @@ and an MCP-shaped request where applicable:
       encoded/opaque command.
 - [ ] Unknown/destructive MCP tool.
 - [ ] Execution approval presented as observability authority.
-- [ ] Query-plan replay, changed tool input, changed endpoint selector, changed
+- [ ] Query-plan replay, changed tool input, changed endpoint URL/selector, changed
       bound/check, and connector substitution.
 - [ ] Authority/key/state access.
 - [ ] Replay of one-use authorization.

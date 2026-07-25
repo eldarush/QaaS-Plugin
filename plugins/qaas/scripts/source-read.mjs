@@ -1,11 +1,21 @@
 import { isDirectExecution, parseNamedArguments, printJson } from "./lib/cli.mjs";
-import { sha256 } from "./lib/canonical-json.mjs";
+import {
+  canonicalDigest,
+  safeEqualHex,
+  sha256,
+} from "./lib/canonical-json.mjs";
+import {
+  consumeApproval,
+  findApprovalByDigest,
+} from "./lib/approval-authority.mjs";
 import { runProcess } from "./lib/process-runner.mjs";
 import {
   isCredentialBearingPath,
   redactText,
 } from "./lib/redact.mjs";
 import { readConfiguredSource } from "./lib/source-read-adapter.mjs";
+import { resolveSourceReadRequest } from "./lib/source-read-request.mjs";
+import { commitCheckpoint } from "./lib/state.mjs";
 import {
   activeSession,
   runtimeContext,
@@ -231,27 +241,100 @@ async function readApprovedCheckout(args, env) {
   };
 }
 
+async function consumeExactSourceReadApproval(
+  context,
+  active,
+  request,
+) {
+  const review = await context.authority.readSigned(
+    "artifacts/source-read-review.json",
+  );
+  const {
+    sequence: _reviewSequence,
+    ...reviewDocument
+  } = review.payload;
+  if (
+    reviewDocument.kind !== "source-read" ||
+    reviewDocument.projectId !== context.authority.projectId ||
+    reviewDocument.taskId !== (active.state.taskId ?? null) ||
+    reviewDocument.phase !== active.state.phase ||
+    reviewDocument.oneUse !== true ||
+    !safeEqualHex(
+      reviewDocument.requestDigest,
+      canonicalDigest(request.description),
+    ) ||
+    !safeEqualHex(
+      reviewDocument.digest,
+      canonicalDigest(reviewDocument),
+    ) ||
+    !safeEqualHex(
+      active.state.approvedDigests?.["source-read"],
+      reviewDocument.digest,
+    )
+  ) {
+    throw new Error(
+      "Exact source-read review, task binding, or approval is stale",
+    );
+  }
+  const approval = await findApprovalByDigest(context.authority, {
+    kind: "source-read",
+    approvedDigest: reviewDocument.digest,
+    sessionId: active.attestation.sessionId,
+    leaseId: active.lease.leaseId,
+  });
+  if (!approval) {
+    throw new Error(
+      "Current session/lease lacks exact one-use source-read approval",
+    );
+  }
+  await consumeApproval(context.authority, approval, {
+    reason: "one-use source-read retrieval",
+  });
+  const {
+    "source-read": _consumed,
+    ...approvedDigests
+  } = active.state.approvedDigests ?? {};
+  await commitCheckpoint(
+    context.authority,
+    active.state,
+    {
+      approvedDigests,
+      nextLegalAction:
+        "Continue only with the bounded result of the approved source read",
+    },
+    { reason: "Consumed exact one-use source-read approval before retrieval" },
+  );
+}
+
 export async function runSourceRead(argv = process.argv.slice(2), env = process.env) {
   const args = parseNamedArguments(argv);
   if (args["checkout-id"] !== undefined) {
     return readApprovedCheckout(args, env);
   }
-  if (args["credential-env"] !== undefined) {
-    throw new Error(
-      "--credential-env is denied; configure the source-specific QAAS_*_CREDENTIAL_ENV setting",
-    );
+  const context = await runtimeContext(env);
+  const active = await activeSession(context, args["session-handle"]);
+  const request = await resolveSourceReadRequest({
+    args,
+    env,
+    projectRoot: context.projectRoot,
+  });
+  if (request.requiresExactApproval) {
+    await consumeExactSourceReadApproval(context, active, request);
   }
-  return readConfiguredSource({
+  const result = await readConfiguredSource({
     source: args.source,
     relativeUrl: args["relative-url"],
-    outputLimitBytes:
-      args["output-limit-bytes"] === undefined
-        ? 32 * 1024
-        : Number(args["output-limit-bytes"]),
-    timeoutMs:
-      args["timeout-ms"] === undefined ? 10_000 : Number(args["timeout-ms"]),
+    credentialEnv: args["credential-env"] ?? null,
+    projectBaseUrl: request.projectBaseUrl,
+    outputLimitBytes: request.description.outputLimitBytes,
+    timeoutMs: request.description.timeoutMs,
     env,
+    allowLegacyEnvironment: false,
   });
+  return {
+    ...result,
+    approvalConsumed: request.requiresExactApproval,
+  };
 }
 
 if (isDirectExecution(import.meta.url)) {

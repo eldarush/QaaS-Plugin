@@ -128,6 +128,66 @@ const packageManifest = JSON.parse(
 if (Object.hasOwn(packageManifest, "license")) {
   errors.push("package.json: license field is forbidden");
 }
+for (const field of [
+  "dependencies",
+  "devDependencies",
+  "optionalDependencies",
+  "peerDependencies",
+  "bundledDependencies",
+  "bundleDependencies",
+]) {
+  if (Object.hasOwn(packageManifest, field)) {
+    errors.push(`package.json: ${field} is forbidden; the plugin is dependency-free`);
+  }
+}
+
+const packageManagerArtifacts = new Set([
+  "package-lock.json",
+  "npm-shrinkwrap.json",
+  "yarn.lock",
+  "pnpm-lock.yaml",
+  "bun.lock",
+  "bun.lockb",
+]);
+for (const { relativePath } of files) {
+  const segments = relativePath.split("/");
+  if (segments.includes("node_modules")) {
+    errors.push(`${relativePath}: node_modules content is forbidden`);
+  }
+  if (packageManagerArtifacts.has(path.posix.basename(relativePath))) {
+    errors.push(`${relativePath}: package-manager lockfiles are forbidden`);
+  }
+}
+
+function isLocalOrBuiltInSpecifier(specifier) {
+  return (
+    specifier.startsWith("node:") ||
+    specifier.startsWith("./") ||
+    specifier.startsWith("../") ||
+    specifier.startsWith("/") ||
+    specifier.startsWith("file:")
+  );
+}
+
+for (const { relativePath, absolutePath } of files) {
+  if (!/\.(?:mjs|js|cjs)$/iu.test(relativePath)) continue;
+  const content = fs.readFileSync(absolutePath, "utf8");
+  const importPatterns = [
+    /\b(?:import|export)\s+(?:[\s\S]*?\s+from\s+)?["']([^"']+)["']/gu,
+    /\bimport\s*\(\s*["']([^"']+)["']\s*\)/gu,
+    /\brequire\s*\(\s*["']([^"']+)["']\s*\)/gu,
+  ];
+  for (const pattern of importPatterns) {
+    for (const match of content.matchAll(pattern)) {
+      const specifier = match[1];
+      if (!isLocalOrBuiltInSpecifier(specifier)) {
+        errors.push(
+          `${relativePath}: third-party module import is forbidden (${specifier})`,
+        );
+      }
+    }
+  }
+}
 
 if (errors.length > 0) {
   process.stderr.write(`Public-tree audit failed:\n- ${errors.join("\n- ")}\n`);

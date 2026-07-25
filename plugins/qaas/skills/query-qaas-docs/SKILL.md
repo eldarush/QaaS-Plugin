@@ -12,7 +12,11 @@ documentation findings to that coordinator and never grants readiness itself.
 Use only after `qaas-workflow` establishes the phase and the logical question.
 
 1. Search first; read only the smallest relevant section. Never load a complete documentation corpus or `llms-full.txt`.
-2. Resolve sources only through the deterministic bounded `docs-read.mjs` helper. It applies the configured approved OpenZIM/WikiAll-compatible capability, primary documentation URL, and secondary URL order; do not bypass it with direct MCP, web, browser, shell, or corpus access.
+2. Resolve sources only through the deterministic bounded `docs-read.mjs`
+   helper. It uses the distribution's built-in QaaS documentation endpoint
+   without user URL setup and may use a separately approved local
+   OpenZIM/WikiAll-compatible capability; do not bypass it with direct MCP,
+   web, browser, shell, or corpus access.
 3. Do not guess MCP tool names. `docs-read.mjs` may use only a validated capability-registry entry with exact server, tool, input schema, argument template, output bound, and successful probe. If it returns `unsupported`, stop.
 4. Match the source to the installed project/package evidence. Do not assume current or latest versions.
 5. If documentation, user facts, project artifacts, or runtime evidence materially conflict, report the conflict; the coordinator asks one question.

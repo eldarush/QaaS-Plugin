@@ -64,8 +64,8 @@ External Allure, ReportPortal, Elasticsearch, Thanos, Kubernetes, or database
 evidence uses a hidden transaction with its own `query-plan.schema.json`. The
 plan is bound to the exact execution-plan digest and current fingerprint. Each
 of its one to eight queries names the current capability ID, exact tool and
-bounded input, configured non-secret endpoint selector, credential environment
-variable names, purpose, timeout/output/item bounds, read-only assertion, typed
+bounded input, exact credential-free endpoint URL or local selector, credential
+environment-variable names, purpose, timeout/output/item bounds, read-only assertion, typed
 response checks, and canonical query digest.
 
 The complete query plan is displayed for separate review. Its approval is

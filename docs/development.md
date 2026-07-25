@@ -2,10 +2,8 @@
 
 ## Prerequisites
 
-- Node.js 24; other Node major versions are outside the preview's validated
-  baseline.
-- A working `/bin/sh` for hook process tests. On Windows this is normally the
-  fixed Git for Windows shell used by Claude Code.
+- Node.js, with no exact major pin. CI currently exercises Node 18, 20, 22,
+  and 24.
 - Git for source control.
 - No npm runtime dependencies.
 
@@ -90,7 +88,7 @@ private paths, and internal endpoints.
 
 - Keep the six lifecycle wrappers small and `disable-model-invocation: true`.
 - Set `user-invocable: false` on every internal skill.
-- Omit redundant plugin skill `name` frontmatter for 2.1.201 compatibility.
+- Omit redundant plugin skill `name` frontmatter for >=2.1.180 compatibility.
 - Put stable process rules in `SKILL.md`; retrieve changing QaaS facts.
 - Link references one hop from the skill and load only what is relevant.
 - Use imperative instructions and explicit stop conditions.

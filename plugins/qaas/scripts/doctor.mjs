@@ -1,5 +1,4 @@
-import { spawn } from "node:child_process";
-import { stat } from "node:fs/promises";
+import { realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { openAuthority } from "./lib/approval-authority.mjs";
@@ -29,25 +28,6 @@ const PROGRAMS = Object.freeze([
   "glab",
   "curl",
 ]);
-const INTEGRATION_VARIABLES = Object.freeze([
-  "QAAS_DOCS_PRIMARY_URL",
-  "QAAS_DOCS_SECONDARY_URL",
-  "QAAS_DOCS_ZIM_PATH",
-  "QAAS_DOCS_MCP_URL",
-  "QAAS_DOCS_MCP_CREDENTIAL_ENV",
-  "QAAS_GITLAB_URL",
-  "QAAS_GITLAB_CREDENTIAL_ENV",
-  "QAAS_ARTIFACTORY_URL",
-  "QAAS_ARTIFACTORY_CREDENTIAL_ENV",
-  "QAAS_NUGET_FEED_URL",
-  "QAAS_NUGET_CREDENTIAL_ENV",
-  "QAAS_MODULES_REPO_URL",
-  "QAAS_MODULES_CREDENTIAL_ENV",
-  "QAAS_COMMON_HOOKS_REPO_URL",
-  "QAAS_COMMON_HOOKS_CREDENTIAL_ENV",
-  "QAAS_REFERENCE_PROJECT_REPO_URL",
-  "QAAS_REFERENCE_PROJECT_CREDENTIAL_ENV",
-]);
 const VERSION_ARGUMENTS = Object.freeze({
   node: ["--version"],
   claude: ["--version"],
@@ -59,6 +39,62 @@ const VERSION_ARGUMENTS = Object.freeze({
   glab: ["--version"],
   curl: ["--version"],
 });
+export const MINIMUM_CLAUDE_CODE_VERSION = "2.1.180";
+
+export function parseSemanticVersion(value) {
+  if (typeof value !== "string") return null;
+  const match = value.match(
+    /(?:^|[^0-9A-Za-z-])v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?=$|[^0-9A-Za-z.+-])/u,
+  );
+  if (!match) return null;
+  const core = match.slice(1, 4).map(Number);
+  if (core.some((part) => !Number.isSafeInteger(part))) return null;
+  const prerelease = match[4]?.split(".") ?? [];
+  if (prerelease.some((part) => part.length === 0)) return null;
+  return { core, prerelease };
+}
+
+function comparePrerelease(left, right) {
+  if (left.length === 0 || right.length === 0) {
+    return left.length === right.length ? 0 : left.length === 0 ? 1 : -1;
+  }
+  const length = Math.max(left.length, right.length);
+  for (let index = 0; index < length; index += 1) {
+    if (left[index] === undefined) return -1;
+    if (right[index] === undefined) return 1;
+    if (left[index] === right[index]) continue;
+    const leftNumeric = /^\d+$/u.test(left[index]);
+    const rightNumeric = /^\d+$/u.test(right[index]);
+    if (leftNumeric && rightNumeric) {
+      if (left[index].length !== right[index].length) {
+        return left[index].length < right[index].length ? -1 : 1;
+      }
+      return left[index] < right[index] ? -1 : 1;
+    }
+    if (leftNumeric !== rightNumeric) return leftNumeric ? -1 : 1;
+    return left[index] < right[index] ? -1 : 1;
+  }
+  return 0;
+}
+
+export function compareSemanticVersions(leftValue, rightValue) {
+  const left = parseSemanticVersion(leftValue);
+  const right = parseSemanticVersion(rightValue);
+  if (!left || !right) return null;
+  for (let index = 0; index < left.core.length; index += 1) {
+    if (left.core[index] === right.core[index]) continue;
+    return left.core[index] < right.core[index] ? -1 : 1;
+  }
+  return comparePrerelease(left.prerelease, right.prerelease);
+}
+
+export function supportsClaudeCodeVersion(value) {
+  const comparison = compareSemanticVersions(
+    value,
+    MINIMUM_CLAUDE_CODE_VERSION,
+  );
+  return comparison !== null && comparison >= 0;
+}
 
 async function pathIsFile(target) {
   try {
@@ -75,226 +111,6 @@ function insideProject(projectRoot, target) {
     relative === "" ||
     (!relative.startsWith("..") && !path.isAbsolute(relative))
   );
-}
-
-function fixedLauncherNodeCandidates(env) {
-  const candidates = [];
-  if (
-    typeof env.QAAS_TRUSTED_NODE24 === "string" &&
-    path.isAbsolute(env.QAAS_TRUSTED_NODE24)
-  ) {
-    candidates.push({
-      source: "QAAS_TRUSTED_NODE24",
-      target: env.QAAS_TRUSTED_NODE24,
-    });
-  }
-  if (process.platform === "win32") {
-    const roots = new Set([
-      path.parse(process.execPath).root,
-      env.SystemDrive ? `${env.SystemDrive}\\` : null,
-      "C:\\",
-      ...Array.from(
-        { length: 23 },
-        (_, index) => `${String.fromCharCode("D".charCodeAt(0) + index)}:\\`,
-      ),
-    ]);
-    for (const root of roots) {
-      if (!root) continue;
-      candidates.push({
-        source: "fixed-launcher-path",
-        target: path.join(root, "Program Files", "nodejs", "node.exe"),
-      });
-    }
-  } else {
-    for (const target of [
-      "/usr/bin/node",
-      "/usr/local/bin/node",
-      "/opt/homebrew/bin/node",
-      "/opt/local/bin/node",
-    ]) {
-      candidates.push({ source: "fixed-launcher-path", target });
-    }
-  }
-  return candidates.filter(
-    ({ target }, index, entries) =>
-      entries.findIndex(
-        (entry) => path.resolve(entry.target) === path.resolve(target),
-      ) === index,
-  );
-}
-
-async function diagnoseFixedLauncherNode({ env, projectRoot }) {
-  const attempted = [];
-  for (const candidate of fixedLauncherNodeCandidates(env)) {
-    attempted.push(candidate);
-    const discovery = await discoverProgram(candidate.target, {
-      cwd: projectRoot,
-      env,
-    });
-    if (!discovery.available || insideProject(projectRoot, discovery.resolvedPath)) {
-      continue;
-    }
-    const versionProbe = await probeProgram(
-      discovery.resolvedPath,
-      ["--version"],
-      {
-        cwd: projectRoot,
-        timeoutMs: 5_000,
-        outputLimitBytes: 4_096,
-        approvedExecutablePath: discovery.resolvedPath,
-        expectedExecutableDigest: discovery.executableDigest,
-      },
-    );
-    if (versionProbe.available && /^v?24(?:\.|$)/u.test(versionProbe.version)) {
-      return {
-        available: true,
-        source: candidate.source,
-        resolvedPath: discovery.resolvedPath,
-        executableDigest: discovery.executableDigest,
-        version: versionProbe.version,
-        targetSatisfied: true,
-        shellPathLookupUsed: false,
-      };
-    }
-  }
-  return {
-    available: false,
-    targetSatisfied: false,
-    shellPathLookupUsed: false,
-    attemptedCandidates: attempted,
-    error: "No fixed or explicitly trusted Node 24 launcher runtime is available",
-  };
-}
-
-function fixedHookShellCandidates(env) {
-  if (process.platform !== "win32") {
-    return [{ source: "fixed-posix-path", target: "/bin/sh" }];
-  }
-  const candidates = [];
-  if (
-    typeof env.CLAUDE_CODE_GIT_BASH_PATH === "string" &&
-    path.isAbsolute(env.CLAUDE_CODE_GIT_BASH_PATH) &&
-    /^(?:ba)?sh\.exe$/iu.test(path.basename(env.CLAUDE_CODE_GIT_BASH_PATH))
-  ) {
-    candidates.push({
-      source: "CLAUDE_CODE_GIT_BASH_PATH",
-      target: env.CLAUDE_CODE_GIT_BASH_PATH,
-    });
-  }
-  const installRoots = [
-    env.ProgramFiles,
-    env["ProgramFiles(x86)"],
-    env.LOCALAPPDATA ? path.join(env.LOCALAPPDATA, "Programs") : null,
-    "C:\\Program Files",
-    "C:\\Program Files (x86)",
-  ].filter(Boolean);
-  for (const root of installRoots) {
-    for (const relative of [
-      ["Git", "usr", "bin", "sh.exe"],
-      ["Git", "bin", "bash.exe"],
-      ["Git", "bin", "sh.exe"],
-    ]) {
-      candidates.push({
-        source: "fixed-git-bash-path",
-        target: path.join(root, ...relative),
-      });
-    }
-  }
-  return candidates.filter(
-    ({ target }, index, entries) =>
-      entries.findIndex(
-        (entry) => path.resolve(entry.target) === path.resolve(target),
-      ) === index,
-  );
-}
-
-async function probeHookShellProcess(program, { cwd, env }) {
-  return new Promise((resolve) => {
-    let settled = false;
-    const child = spawn(
-      program,
-      ["-c", 'test -x /bin/sh && /bin/sh -c "exit 0"'],
-      {
-        cwd,
-        env,
-        shell: false,
-        windowsHide: true,
-        stdio: ["ignore", "ignore", "ignore"],
-      },
-    );
-    const finish = (result) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve(result);
-    };
-    const timer = setTimeout(() => {
-      child.kill();
-      finish({ available: false, error: "hook shell probe timed out" });
-    }, 5_000);
-    child.once("error", (error) => {
-      finish({ available: false, error: error.message });
-    });
-    child.once("close", (exitCode, signal) => {
-      finish({
-        available: exitCode === 0 && signal === null,
-        exitCode,
-        signal,
-        error:
-          exitCode === 0 && signal === null
-            ? null
-            : "candidate cannot execute the required /bin/sh command",
-      });
-    });
-  });
-}
-
-async function diagnoseHookShell({ env, projectRoot, pluginRoot }) {
-  const attempted = [];
-  for (const candidate of fixedHookShellCandidates(env)) {
-    const discovery = await discoverProgram(candidate.target, {
-      cwd: projectRoot,
-      env,
-    });
-    const attempt = {
-      ...candidate,
-      available: discovery.available,
-      error: discovery.error ?? null,
-    };
-    attempted.push(attempt);
-    if (
-      !discovery.available ||
-      insideProject(projectRoot, discovery.resolvedPath) ||
-      insideProject(pluginRoot, discovery.resolvedPath)
-    ) {
-      continue;
-    }
-    const probe = await probeHookShellProcess(discovery.resolvedPath, {
-      cwd: projectRoot,
-      env,
-    });
-    attempt.probe = probe;
-    if (probe.available) {
-      return {
-        available: true,
-        requiredCommand: "/bin/sh",
-        source: candidate.source,
-        resolvedPath: discovery.resolvedPath,
-        executableDigest: discovery.executableDigest,
-        actualProcessProbe: true,
-      };
-    }
-  }
-  return {
-    available: false,
-    requiredCommand: "/bin/sh",
-    actualProcessProbe: true,
-    attemptedCandidates: attempted,
-    error:
-      process.platform === "win32"
-        ? "Git Bash with a working /bin/sh is required for QaaS hooks on Windows"
-        : "A working /bin/sh is required for QaaS hooks",
-  };
 }
 
 async function authorityDiagnostics({ env, projectRoot, pluginVersion }) {
@@ -423,11 +239,14 @@ export async function runDoctor({
   ),
   pluginVersion = null,
 } = {}) {
+  const canonicalProjectRoot = await realpath(projectRoot).catch(() =>
+    path.resolve(projectRoot)
+  );
   const plugin = await validatePlugin({
     scriptDirectory: path.join(pluginRoot, "scripts"),
   });
   const effectivePluginVersion = pluginVersion ?? plugin.version;
-  const [contextBudget, ownHooks, runtimeBundle, settings, hookShell] =
+  const [contextBudget, ownHooks, runtimeBundle, settings] =
     await Promise.all([
       checkContextBudget({
         projectRoot,
@@ -444,7 +263,6 @@ export async function runDoctor({
         projectRoot,
         userHome: env.USERPROFILE ?? env.HOME ?? null,
       }),
-      diagnoseHookShell({ env, projectRoot, pluginRoot }),
     ]);
   const tools = {};
   for (const program of PROGRAMS) {
@@ -453,7 +271,7 @@ export async function runDoctor({
       tools[program] = discovery;
       continue;
     }
-    if (insideProject(projectRoot, discovery.resolvedPath)) {
+    if (insideProject(canonicalProjectRoot, discovery.resolvedPath)) {
       tools[program] = {
         available: false,
         error: "project-controlled PATH shadow denied",
@@ -478,9 +296,9 @@ export async function runDoctor({
       version: probe.available ? probe.version : null,
       targetSatisfied:
         program === "node"
-          ? probe.available && /^v?24(?:\.|$)/u.test(probe.version)
+          ? probe.available
           : program === "claude"
-            ? probe.available && /\b2\.1\.201\b/u.test(probe.version)
+            ? probe.available && supportsClaudeCodeVersion(probe.version)
             : null,
     };
   }
@@ -493,13 +311,23 @@ export async function runDoctor({
       shadowNames.map((name) => pathIsFile(path.join(projectRoot, name))),
     )
   ).some(Boolean);
-  const hookLauncherRuntime = await diagnoseFixedLauncherNode({
-    env,
-    projectRoot,
-  });
-  const integrations = Object.fromEntries(
-    INTEGRATION_VARIABLES.map((name) => [name, Boolean(env[name])]),
-  );
+  const projectNodePathShadow = Boolean(tools.node?.shadowedPath);
+  const hookRuntime = {
+    available:
+      tools.node?.available === true &&
+      tools.node?.versionProbe?.available === true,
+    resolvedPath: tools.node?.resolvedPath ?? null,
+    executableDigest: tools.node?.executableDigest ?? null,
+    version: tools.node?.version ?? null,
+    projectPathShadowDenied: projectNodePathShadow,
+    shellRequired: false,
+  };
+  const integrations = {
+    zeroSetupCoreEndpoints: true,
+    projectNuGetSourcesDerived: true,
+    taskSpecificSourcesRequestedOnlyWhenNeeded: true,
+    credentialValuesInspected: false,
+  };
   const authority = await authorityDiagnostics({
     env,
     projectRoot,
@@ -513,24 +341,20 @@ export async function runDoctor({
   if (settings.unknownSideEffectingHooks) {
     blocking.push("other settings-defined hooks make write/run safety unverified");
   }
-  if (!hookLauncherRuntime.available) {
+  if (!hookRuntime.available) {
     blocking.push(
-      "Node 24 is unavailable through the fixed QaaS hook-launcher paths",
-    );
-  }
-  if (!hookShell.available) {
-    blocking.push(
-      process.platform === "win32"
-        ? "Git Bash /bin/sh is unavailable for mandatory QaaS hooks"
-        : "/bin/sh is unavailable for mandatory QaaS hooks",
+      projectNodePathShadow
+        ? "project-controlled Node PATH shadow denies the mandatory hook runtime"
+        : "Node.js is unavailable for mandatory QaaS hooks",
     );
   }
   if (
     tools.claude.available &&
-    tools.claude.versionProbe?.available &&
     tools.claude.targetSatisfied !== true
   ) {
-    blocking.push("Installed Claude Code does not match target 2.1.201");
+    blocking.push(
+      `Installed Claude Code is older than supported floor ${MINIMUM_CLAUDE_CODE_VERSION} or its version cannot be verified`,
+    );
   }
   if (authority.initialized && !authority.valid) {
     blocking.push("protected authority integrity is invalid");
@@ -542,8 +366,8 @@ export async function runDoctor({
     ok: blocking.length === 0,
     mode: "read-only",
     targetRuntime: {
-      claudeCode: "2.1.201",
-      node: "24.x",
+      claudeCode: `>=${MINIMUM_CLAUDE_CODE_VERSION}`,
+      node: "available",
       postCompact: true,
       postToolUseFailure: true,
       userPromptExpansion: false,
@@ -569,9 +393,9 @@ export async function runDoctor({
         "Stage and approve one exact source-checkout artifact, run the one-use helper, then use bounded offline inventory/file reads from the signed immutable commit.",
     },
     documentationSources: {
-      publicDefault: DEFAULT_QAAS_DOCS_URL,
-      primaryConfigured: Boolean(env.QAAS_DOCS_PRIMARY_URL),
-      streamableMcpConfigured: Boolean(env.QAAS_DOCS_MCP_URL),
+      builtIn: DEFAULT_QAAS_DOCS_URL,
+      zeroSetup: true,
+      accessedOnlyByExplicitBoundedQuery: true,
     },
     plugin,
     contextBudget,
@@ -581,13 +405,12 @@ export async function runDoctor({
       runtimeBundleDigest: runtimeBundle.digest ?? null,
       completeCompanionPluginAndEnterpriseInventory: false,
       limitation:
-        "Claude Code 2.1.201 does not expose a complete companion-plugin/enterprise-hook inventory to this plugin; managed deployment must verify /hooks and policy.",
+        "Claude Code does not expose a complete companion-plugin/enterprise-hook inventory to this plugin; managed deployment must verify /hooks and policy.",
     },
     tools,
-    hookShell,
     projectNodeShadow,
-    projectNodeShadowIgnoredByFixedLauncher: projectNodeShadow,
-    hookLauncherRuntime,
+    projectNodePathShadow,
+    hookRuntime,
     integrations,
     authority,
     blocking,

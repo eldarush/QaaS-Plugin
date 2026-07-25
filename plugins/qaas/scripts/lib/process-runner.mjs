@@ -53,6 +53,12 @@ const FIXED_SAFE_GIT_ENVIRONMENT = Object.freeze({
   GIT_CONFIG_NOSYSTEM: "1",
   GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : "/dev/null",
 });
+const FIXED_SAFE_GIT_COMMAND_CONFIGURATION = Object.freeze({
+  GIT_CONFIG_KEY_0: "http.followRedirects",
+  GIT_CONFIG_VALUE_0: "false",
+  GIT_CONFIG_KEY_1: "http.sslVerify",
+  GIT_CONFIG_VALUE_1: "false",
+});
 
 const SCRIPT_DESTRUCTIVE =
   /\b(?:rmSync|rm|unlinkSync|unlink|rmdirSync|rmdir|renameSync|rename)\s*\(|\b(?:Remove-Item|Move-Item|Rename-Item)\b|\bchild_process\b[\s\S]{0,200}\bshell\s*:\s*true\b/iu;
@@ -301,10 +307,15 @@ function validateProcessSpecification({
   ) {
     throw new TypeError("envNames must contain environment-variable names");
   }
+  const safeGitCommandConfigurationNames = new Set([
+    "GIT_CONFIG_COUNT",
+    ...Object.keys(FIXED_SAFE_GIT_COMMAND_CONFIGURATION),
+  ]);
   const forbiddenEnv = envNames.filter(
     (name) =>
       FORBIDDEN_ENVIRONMENT_NAME.test(name) &&
-      !Object.hasOwn(FIXED_SAFE_GIT_ENVIRONMENT, name),
+      !Object.hasOwn(FIXED_SAFE_GIT_ENVIRONMENT, name) &&
+      !safeGitCommandConfigurationNames.has(name),
   );
   if (forbiddenEnv.length > 0) {
     throw new Error(
@@ -321,6 +332,40 @@ function validateProcessSpecification({
       throw new Error(
         `${name} is permitted only with the fixed isolated Git configuration value`,
       );
+    }
+  }
+  const gitConfigurationNames = envNames.filter((name) =>
+    safeGitCommandConfigurationNames.has(name),
+  );
+  if (gitConfigurationNames.length > 0) {
+    const count = environment.GIT_CONFIG_COUNT;
+    const expectedNames =
+      count === "1"
+        ? ["GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"]
+        : count === "2"
+          ? [
+              "GIT_CONFIG_COUNT",
+              "GIT_CONFIG_KEY_0",
+              "GIT_CONFIG_VALUE_0",
+              "GIT_CONFIG_KEY_1",
+              "GIT_CONFIG_VALUE_1",
+            ]
+          : null;
+    if (
+      expectedNames === null ||
+      expectedNames.some((name) => !envNames.includes(name)) ||
+      gitConfigurationNames.some((name) => !expectedNames.includes(name))
+    ) {
+      throw new Error(
+        "Git invocation configuration must contain only the complete fixed redirect/TLS bundle",
+      );
+    }
+    for (const name of expectedNames.slice(1)) {
+      if (environment[name] !== FIXED_SAFE_GIT_COMMAND_CONFIGURATION[name]) {
+        throw new Error(
+          `${name} is permitted only with the fixed reviewed Git configuration value`,
+        );
+      }
     }
   }
   if (

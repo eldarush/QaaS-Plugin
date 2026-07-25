@@ -40,6 +40,24 @@ import {
 
 const PLAN_ACTIONS = new Set(["restore", "build", "template"]);
 
+export function assertAirGapPackageSources(snapshot) {
+  const unsafe = (snapshot?.packageSources ?? []).filter((source) => {
+    if (source.kind === "unresolved-project-expression") return true;
+    if (source.kind !== "http") return false;
+    try {
+      const host = new URL(source.url).hostname.toLowerCase();
+      return host === "nuget.org" || host.endsWith(".nuget.org");
+    } catch {
+      return true;
+    }
+  });
+  if (unsafe.length > 0) {
+    throw new Error(
+      "Restore is blocked because project package metadata contains an unresolved or public NuGet source",
+    );
+  }
+}
+
 function isInside(root, candidate) {
   const relative = path.relative(root, candidate);
   return (
@@ -376,6 +394,14 @@ async function runPlanAction(context, active, action) {
       return { action, skipped: true, reason: "No restore commands were approved" };
     }
     throw new Error(`Approved plan has no ${action} commands`);
+  }
+  if (action === "restore") {
+    assertAirGapPackageSources(
+      await computePackageSnapshot({
+        projectRoot: context.projectRoot,
+        env: context.env,
+      }),
+    );
   }
   const priorArtifacts = await captureVerificationArtifacts(
     context.projectRoot,

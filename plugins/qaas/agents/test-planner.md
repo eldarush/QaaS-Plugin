@@ -28,8 +28,11 @@ Produce a candidate plan containing:
 - exact supplied restore/build/template commands and generated-output classes
 - risks, residual risks, and expected diff envelope
 - verification steps and static-versus-runtime boundary
-- if the active authority protocol content-binds writes, draft the exact
-  complete target bytes for every planned write without writing them, compute
+- read the signed active authority's
+  `authorityCapabilities.writeContentBinding`; it is `false` in this release,
+  so emit no target bytes or write-digest commands; only if a future active
+  authority reports `true`, draft the exact complete target bytes for every
+  planned write without writing them, compute
   each byte sequence's SHA-256, and include exactly one
   `write <add|modify> <path> sha256:<digest>` command for it; use `add` only
   for `paths.create`, `modify` only for `paths.modify`, and emit no unscoped,
@@ -57,5 +60,5 @@ Produce a candidate plan containing:
 Do not supply a missing QaaS command, key, type, package, version, or semantic
 choice from memory. This does not forbid the disclosed, approval-bound
 project-local proposals above. If any hard readiness item is absent, return
-`NOT_READY` with the smallest set of blocking facts. Keep the plan under 1,000
-words plus a path table.
+`NOT_READY` with the smallest set of blocking facts. Keep the entire response,
+including its path table, at or below 500 words.

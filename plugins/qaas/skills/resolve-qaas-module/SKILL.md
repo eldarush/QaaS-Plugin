@@ -12,7 +12,10 @@ bounded current envelope and returns results to that coordinator.
 Use real module content; never infer it from a name or copy a remembered module.
 
 1. Prefer an existing local checkout or project artifact.
-2. Otherwise use an approved bounded read-only source capability.
+2. Otherwise use the coordinator's signed one-use bounded source-read
+   transaction from `operator-protocol.md`. Bind the exact user-supplied base
+   URL, relative path/query, credential-variable name, output bound, and
+   timeout; run only the byte-identical approved request once.
 3. When semantic understanding requires repository content that bounded GET cannot provide, use only the signed one-use source-checkout transaction for the configured `modules`, `common-hooks`, or `reference-project` source. Bind the exact URL, immutable ref and commit, transport, executable digest, credential-variable selector, and TLS choice. Read the resulting bare checkout only through the bounded inventory/file helper.
 4. Never use `git pull`, a working-tree checkout, submodules, LFS, lazy fetch, an unpinned ref, embedded credentials, or a global TLS change.
 5. Record normalized source, pinned commit/artifact digest, retrieval time, and compatibility evidence.

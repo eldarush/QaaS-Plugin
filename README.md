@@ -12,9 +12,9 @@ unknowns with guesses. It is not a general test generator, does not change the
 QaaS framework, does not manage a test environment by default, and does not
 claim fully autonomous QA.
 
-Version `0.1.0` is a Codex-proxy preview. The dependency-free plugin checks and
+Version `0.2.0` is a Codex-proxy preview. The dependency-free plugin checks and
 private proxy evaluation have been exercised outside the target environment;
-acceptance with Claude Code 2.1.201 and MiniMax M2.7 remains a separate
+acceptance with Claude Code >=2.1.180 and MiniMax M2.7 remains a separate
 air-gapped validation step.
 
 ## What it can help with
@@ -50,15 +50,11 @@ invents a QaaS key, package, interface, or capability.
 
 The target baseline is:
 
-- Claude Code 2.1.201.
-- Node.js 24 available to Claude Code. Other Node major versions are outside
-  this preview's validated baseline.
-- On Windows, Git for Windows (or an organization-reviewed equivalent) that
-  gives Claude Code hooks a working `/bin/sh`. `/qaas:doctor` executes a
-  fixed-path shell probe and treats its absence as blocking.
+- Claude Code >=2.1.180.
+- Node.js available to Claude Code. The plugin has no exact Node major pin or
+  npm runtime dependency; CI exercises Node 18, 20, 22, and 24.
 - The .NET SDK and QaaS packages required by the user's project.
-- Git when the project or an approved reference repository needs it. On
-  Windows, Git for Windows also supplies the mandatory hook shell above.
+- Git only when the project or an approved reference repository needs it.
 
 Helm, Docker, kubectl, `glab`, and `curl` are optional. Missing optional tools
 must not block unrelated work. The plugin never installs an internet package or
@@ -127,9 +123,13 @@ For a persistent air-gapped installation:
    `claude plugin install qaas@qaas-plugin --scope local`), reload plugins, and
    run `/qaas:doctor`.
 
-The plugin does not download its own prerequisites. QaaS packages,
-documentation, internal CA certificates, and any optional tools must already
-be available through approved air-gapped sources.
+The plugin does not download its own prerequisites. QaaS packages, internal CA
+certificates, and optional tools must already be available through approved
+air-gapped sources. Documentation and Artifactory have immutable distribution
+defaults described below; they are contacted only by an explicit focused read,
+never automatically or in the background. Startup, hooks, and doctor do not
+contact them; onboarding may issue an explicit focused documentation lookup
+when a missing QaaS fact requires it.
 
 See [air-gap configuration](docs/airgap-configuration.md) and
 [internal marketplace setup](docs/internal-marketplace.md).
@@ -255,48 +255,52 @@ If the sources disagree, Claude asks.
 
 Changing QaaS details are retrieved rather than copied into the plugin. Exact
 configuration keys, hook interfaces, packages, commands, and current versions
-must have documentation/package provenance. The public docs default is
-[docs.qaas.online](https://docs.qaas.online/); both online and offline sources
-are configurable.
+must have documentation/package provenance.
+
+Two endpoints are built into the reviewed distribution:
+
+- QaaS documentation: [https://docs.qaas.online/](https://docs.qaas.online/)
+- Artifactory: [https://jfrog.com/artifactory/](https://jfrog.com/artifactory/)
+
+They have no runtime environment override and require no normal setup. A
+focused documentation or Artifactory command may perform one bounded read
+(maximum 16 KiB). Loading, hooks, doctor, and general conversation perform no
+network call. Onboarding performs no background lookup, but may explicitly
+request one focused QaaS fact. Organization-specific air-gapped bundles may
+replace the two values only as a centrally reviewed distribution-build change.
 
 ## Configuration
 
-These environment variables contain non-secret locations:
+NuGet endpoints are derived from the target project's `NuGet.Config`,
+project/props/targets restore properties, and restore evidence. If several
+project sources remain, the user selects the exact relevant one; there is no
+global NuGet URL setting.
 
-| Variable | Meaning |
-| --- | --- |
-| `QAAS_DOCS_PRIMARY_URL` | Preferred current QaaS documentation base URL. |
-| `QAAS_DOCS_SECONDARY_URL` | Optional fallback documentation base URL. |
-| `QAAS_DOCS_ZIM_PATH` | Local QaaS documentation ZIM file. |
-| `QAAS_DOCS_MCP_URL` | Approved Streamable HTTP endpoint for the read-only OpenZIM/WikiAll-compatible docs server. |
-| `QAAS_DOCS_MCP_CREDENTIAL_ENV` | Name of the separate environment variable holding an optional bearer credential; never the credential value. |
-| `QAAS_GITLAB_URL` | Internal GitLab base URL. |
-| `QAAS_GITLAB_CREDENTIAL_ENV` | Optional name of the separate bearer-credential environment variable for bounded GitLab HTTP reads. |
-| `QAAS_ARTIFACTORY_URL` | Internal Artifactory base URL. |
-| `QAAS_ARTIFACTORY_CREDENTIAL_ENV` | Optional name of the separate bearer-credential environment variable for bounded Artifactory reads. |
-| `QAAS_NUGET_FEED_URL` | NuGet feed used by the project. |
-| `QAAS_NUGET_CREDENTIAL_ENV` | Optional name of the separate bearer-credential environment variable for bounded NuGet metadata reads. |
-| `QAAS_MODULES_REPO_URL` | Shared YAML module source repository. |
-| `QAAS_MODULES_CREDENTIAL_ENV` | Optional selector `GLAB_TOKEN` or `GITLAB_TOKEN` for the exact module repository; never the token value. |
-| `QAAS_COMMON_HOOKS_REPO_URL` | Shared Common Hooks source repository. |
-| `QAAS_COMMON_HOOKS_CREDENTIAL_ENV` | Optional selector `GLAB_TOKEN` or `GITLAB_TOKEN` for the exact Common Hooks repository. |
-| `QAAS_REFERENCE_PROJECT_REPO_URL` | Optional similar-project repository used only as an approved style/reference source. |
-| `QAAS_REFERENCE_PROJECT_CREDENTIAL_ENV` | Optional selector `GLAB_TOKEN` or `GITLAB_TOKEN` for that exact reference repository. |
-| `QAAS_TRUSTED_NODE24` | Optional absolute fixed-system Node 24 executable for mandatory hooks when no standard trusted location applies. |
+GitLab, module, and Common Hooks HTTP reads have no global URL setting. Only
+when one is relevant, the workflow asks for the exact approved source and
+passes it through a signed, one-use source-read review before the bounded
+helper can contact it. The review binds the exact `--base-url`, relative
+path/query, task/session, output and timeout limits, and endpoint/request
+digests. An optional `--credential-env` input carries only the name of a
+separate, user-selected credential variable. Query-string credentials and
+high-entropy values are rejected. NuGet reads may use the same credential-name
+input while their URL remains project-derived.
 
-Task-specific endpoints may use names chosen by the user. Credentials use
-separate, user-selected environment variables or an existing credential helper.
-Only the credential variable's name may enter project context—never its value.
-Do not embed credentials in URLs, command lines, YAML, or `.claude/`.
+Reference-project checkout sources and observability endpoints are likewise
+requested only for a task that needs them and are bound into that task's
+approval/provenance. They are not normal startup configuration.
 
-For internal GitLab reads, the preference order is an existing checkout, an
-approved read-only MCP integration, `glab`, local `git`, then `curl`. When
+Never put credential values in URLs, command lines, YAML, `.claude/`, or
+provenance. Only the credential variable's name may be recorded or passed.
+
+For internal GitLab reads, prefer existing local content, then an approved
+read-only integration or the plugin's signed bounded source GET. When
 repository semantics are required during onboarding, the plugin can create one
-signed, immutable, bare reference checkout for the configured modules, Common
-Hooks, or reference-project source. That write requires a canonical approval;
-its approval is consumed once, and content remains accessible only through
-bounded inventory/file reads. The plugin never uses `gh` for internal GitLab,
-checks out a working tree, follows submodules/LFS, lazily fetches, or pushes.
+signed, immutable, bare reference checkout for the reviewed modules, Common
+Hooks, or reference-project source. Both source GET and checkout approvals are
+consumed once, and checkout content remains accessible only through bounded
+inventory/file reads. The plugin never uses `gh` for internal GitLab, checks
+out a working tree, follows submodules/LFS, lazily fetches, or pushes.
 If internal TLS requires bypassing certificate validation, it must be
 explicitly accepted for one exact HTTPS Git source and one operation; the
 plugin never changes global Git TLS configuration.
@@ -352,13 +356,15 @@ Execution approval does not authorize external evidence access. If the accepted
 oracle still needs task-relevant Allure, ReportPortal, Elasticsearch, Thanos,
 Kubernetes, or database evidence after the run, the hidden workflow prepares a
 separate bounded query plan. The user reviews every exact connector, input,
-endpoint selector, credential-variable name, purpose, bound, and typed response
-check; its signed approval is consumed once. A connector that is not currently
+credential-free endpoint URL or local selector, credential-variable name,
+purpose, bound, and typed response check; its signed approval is consumed once.
+A connector that is not currently
 installed, probed, bounded, and proven read-only blocks the query—there is no
 direct-tool fallback. The registered tool/input is a permission contract, not a
-direct invocation: fixed internal adapters perform only bounded project-artifact
-reads or remote GET. They bind and recheck a sanitized endpoint identity and
-endpoint-value digest immediately before access.
+direct invocation: fixed internal adapters perform only bounded
+project-artifact reads or remote GET. They bind the exact task-specific remote
+URL and recheck its sanitized identity and value digest immediately before
+access.
 
 Only after execution approval may the plugin execute the test. A successful build and template
 render prove structural validity, not runtime behavior. If a run has not
@@ -449,8 +455,10 @@ explain the exact target and consequence but will not execute it.
   installation.
 - **A previously approved plan became stale:** review the changed project,
   documentation, package, or environment fingerprint and revise the plan.
-- **Docs cannot be resolved:** configure a URL or local ZIM source and confirm
-  that the matching QaaS/package version is available. The plugin will not guess.
+- **Docs cannot be resolved:** verify that the distribution's built-in docs
+  endpoint is reachable for an explicit query, or ask the distribution owner
+  for a reviewed disconnected build. The plugin will not prompt for a runtime
+  replacement URL or guess from general internet results.
 - **A Common Hook or module is unknown:** provide its local/repository source or
   artifact provenance and explain its intended behavior.
 - **An optional CLI is missing:** use an already configured MCP or local
@@ -486,7 +494,7 @@ the [target acceptance checklist](docs/target-acceptance.md).
 
 ## Known limitations
 
-- Target Claude Code 2.1.201 and MiniMax M2.7 acceptance is not complete.
+- Target Claude Code >=2.1.180 and MiniMax M2.7 acceptance is not complete.
 - The plugin cannot prove subjective “100% understanding”; it enforces an
   explicit completeness matrix and user confirmation instead.
 - It cannot make hooks an OS sandbox or protect against a user disabling them.

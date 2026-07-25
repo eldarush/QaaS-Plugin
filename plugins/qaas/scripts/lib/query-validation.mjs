@@ -6,6 +6,7 @@ import {
   sha256,
 } from "./canonical-json.mjs";
 import { secretFindings } from "./redact.mjs";
+import { assertCredentialFreeQueryParameters } from "./url-safety.mjs";
 import {
   isObject,
   issue,
@@ -180,21 +181,105 @@ export function validateQueryPlan(document) {
       }
       if (
         typeof query.endpointSelector === "string" &&
-        !/^(?:[A-Z][A-Z0-9_]{1,80}|project-artifact)$/u.test(
-          query.endpointSelector,
-        )
+        query.endpointSelector !== "project-artifact"
+      ) {
+        try {
+          const endpoint = new URL(query.endpointSelector);
+          const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(
+            endpoint.hostname.toLowerCase(),
+          );
+          if (
+            !["http:", "https:"].includes(endpoint.protocol) ||
+            endpoint.username ||
+            endpoint.password ||
+            endpoint.search ||
+            endpoint.hash ||
+            (endpoint.protocol !== "https:" && !loopback)
+          ) {
+            throw new Error("unsafe endpoint");
+          }
+        } catch {
+          errors.push(
+            issue(
+              `${pathname}.endpointSelector`,
+              "must be project-artifact or one exact credential-free user-approved HTTPS/loopback base URL",
+              "format",
+            ),
+          );
+        }
+      }
+      if (
+        query.provider === "allure" &&
+        query.endpointSelector !== "project-artifact"
       ) {
         errors.push(
           issue(
             `${pathname}.endpointSelector`,
-            "must be one configured selector ID or project-artifact",
+            "must be project-artifact for Allure",
+            "const",
+          ),
+        );
+      }
+      if (
+        query.provider !== "allure" &&
+        query.endpointSelector === "project-artifact"
+      ) {
+        errors.push(
+          issue(
+            `${pathname}.endpointSelector`,
+            "must be the exact approved provider base URL",
             "format",
           ),
         );
       }
       if (
+        query.provider !== "allure" &&
+        typeof query.endpointSelector === "string" &&
+        query.endpointSelector !== "project-artifact" &&
+        isObject(query.toolInput)
+      ) {
+        if (typeof query.toolInput.relativeUrl !== "string") {
+          errors.push(
+            issue(
+              `${pathname}.toolInput.relativeUrl`,
+              "is required for the fixed HTTP GET adapter",
+              "required",
+            ),
+          );
+        } else {
+          try {
+            const base = new URL(query.endpointSelector);
+            const requested = new URL(query.toolInput.relativeUrl, base);
+            const basePath = base.pathname.endsWith("/")
+              ? base.pathname
+              : `${base.pathname}/`;
+            if (
+              requested.origin !== base.origin ||
+              (
+                requested.pathname !== base.pathname &&
+                !requested.pathname.startsWith(basePath)
+              ) ||
+              requested.username ||
+              requested.password ||
+              requested.hash
+            ) {
+              throw new Error("escapes the approved endpoint");
+            }
+            assertCredentialFreeQueryParameters(requested, "Query URL");
+          } catch (error) {
+            errors.push(
+              issue(
+                `${pathname}.toolInput.relativeUrl`,
+                `must remain inside the approved endpoint and contain no credential-like query data: ${error.message}`,
+                "format",
+              ),
+            );
+          }
+        }
+      }
+      if (
         !Array.isArray(query.credentialEnvNames) ||
-        query.credentialEnvNames.length > 4 ||
+        query.credentialEnvNames.length > 1 ||
         new Set(query.credentialEnvNames).size !==
           query.credentialEnvNames.length ||
         query.credentialEnvNames.some(
@@ -207,7 +292,7 @@ export function validateQueryPlan(document) {
         errors.push(
           issue(
             `${pathname}.credentialEnvNames`,
-            "must contain at most four safe user-selected environment-variable names",
+            "must contain at most one safe user-selected bearer-token environment-variable name",
             "format",
           ),
         );

@@ -11,7 +11,7 @@ Never access or edit protected state/authority paths. Never use a path outside t
 
 Apply the smallest QaaS change that meets the supplied acceptance criteria. Preserve YAML/C# style, naming, layout, modules, hooks, samples, packages, encoding, and line endings where relevant. Reuse before adding. Do not add speculative abstractions, infrastructure, test frameworks, refactors, cleanup, or commented-out code. Do not invent QaaS syntax or APIs.
 
-After editing, return:
+After editing, return no more than 500 words:
 
 - changed paths
 - concise reason and evidence for each

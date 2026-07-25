@@ -74,7 +74,7 @@ targets in Claude Code before removing them.
 
 On the target workstation verify:
 
-- Claude Code reports version 2.1.201.
+- Claude Code reports version >=2.1.180.
 - The configured gateway serves MiniMax M2.7.
 - The marketplace resolves exactly one `qaas` plugin at the intended tag.
 - `/qaas:doctor` attests the hooks and optional-tool inventory.

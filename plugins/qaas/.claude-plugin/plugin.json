@@ -1,7 +1,7 @@
 {
   "name": "qaas",
   "displayName": "QaaS",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A safety-gated Claude Code workflow for documentation-backed QaaS test authoring and verification.",
   "author": {
     "name": "Firefly"

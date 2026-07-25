@@ -185,6 +185,15 @@ export async function runSourceCheckout(
     ...context.env,
     GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : "/dev/null",
     GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_COUNT: document.tlsVerify ? "1" : "2",
+    GIT_CONFIG_KEY_0: "http.followRedirects",
+    GIT_CONFIG_VALUE_0: "false",
+    ...(document.tlsVerify
+      ? {}
+      : {
+          GIT_CONFIG_KEY_1: "http.sslVerify",
+          GIT_CONFIG_VALUE_1: "false",
+        }),
     GIT_TERMINAL_PROMPT: "0",
     GIT_LFS_SKIP_SMUDGE: "1",
     GIT_NO_LAZY_FETCH: "1",
@@ -202,6 +211,15 @@ export async function runSourceCheckout(
         "GIT_NO_LAZY_FETCH",
         "GIT_CONFIG_GLOBAL",
         "GIT_CONFIG_NOSYSTEM",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_KEY_0",
+        "GIT_CONFIG_VALUE_0",
+        ...(document.tlsVerify
+          ? []
+          : [
+              "GIT_CONFIG_KEY_1",
+              "GIT_CONFIG_VALUE_1",
+            ]),
         ...(document.credentialEnv ? [document.credentialEnv] : []),
       ],
       timeoutMs: 120_000,

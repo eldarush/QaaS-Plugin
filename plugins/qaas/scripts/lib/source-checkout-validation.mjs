@@ -5,20 +5,11 @@ import {
 } from "./canonical-json.mjs";
 import { secretFindings } from "./redact.mjs";
 
-const SOURCE_CONFIGURATION = Object.freeze({
-  modules: Object.freeze({
-    url: "QAAS_MODULES_REPO_URL",
-    credential: "QAAS_MODULES_CREDENTIAL_ENV",
-  }),
-  "common-hooks": Object.freeze({
-    url: "QAAS_COMMON_HOOKS_REPO_URL",
-    credential: "QAAS_COMMON_HOOKS_CREDENTIAL_ENV",
-  }),
-  "reference-project": Object.freeze({
-    url: "QAAS_REFERENCE_PROJECT_REPO_URL",
-    credential: "QAAS_REFERENCE_PROJECT_CREDENTIAL_ENV",
-  }),
-});
+const SUPPORTED_SOURCES = new Set([
+  "modules",
+  "common-hooks",
+  "reference-project",
+]);
 
 function issue(path, message) {
   return { path, message };
@@ -39,10 +30,12 @@ export function normalizedCheckoutUrl(value) {
 }
 
 export function checkoutSourceConfiguration(source) {
-  return SOURCE_CONFIGURATION[source] ?? null;
+  return SUPPORTED_SOURCES.has(source)
+    ? Object.freeze({ source, configuredBy: "reviewed-checkout-document" })
+    : null;
 }
 
-export function validateSourceCheckout(document, env = process.env) {
+export function validateSourceCheckout(document, _env = process.env) {
   const errors = [];
   if (!document || typeof document !== "object" || Array.isArray(document)) {
     return { valid: false, errors: [issue("$", "must be an object")] };
@@ -81,21 +74,6 @@ export function validateSourceCheckout(document, env = process.env) {
   } catch (error) {
     errors.push(issue("$.repositoryUrl", error.message));
   }
-  if (configuration) {
-    try {
-      const configured = normalizedCheckoutUrl(env[configuration.url]);
-      if (normalized && normalized !== configured) {
-        errors.push(
-          issue(
-            "$.repositoryUrl",
-            `must exactly match ${configuration.url}`,
-          ),
-        );
-      }
-    } catch (error) {
-      errors.push(issue("$.repositoryUrl", `${configuration.url}: ${error.message}`));
-    }
-  }
   if (
     typeof document.ref !== "string" ||
     document.ref.length < 1 ||
@@ -113,17 +91,6 @@ export function validateSourceCheckout(document, env = process.env) {
   if (!["git", "glab"].includes(document.transport)) {
     errors.push(issue("$.transport", "must be git or glab"));
   }
-  const configuredCredential = configuration
-    ? env[configuration.credential] ?? null
-    : null;
-  if (document.credentialEnv !== configuredCredential) {
-    errors.push(
-      issue(
-        "$.credentialEnv",
-        `must exactly match ${configuration?.credential ?? "source configuration"}`,
-      ),
-    );
-  }
   if (
     document.credentialEnv !== null &&
     !["GLAB_TOKEN", "GITLAB_TOKEN"].includes(document.credentialEnv)
@@ -131,7 +98,7 @@ export function validateSourceCheckout(document, env = process.env) {
     errors.push(
       issue(
         "$.credentialEnv",
-        "private checkout supports only user-configured GLAB_TOKEN or GITLAB_TOKEN",
+        "private checkout supports only the user-selected GLAB_TOKEN or GITLAB_TOKEN variable name",
       ),
     );
   }

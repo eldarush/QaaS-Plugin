@@ -24,7 +24,7 @@ smallest returned section. Match conclusions to supplied project/package
 evidence. If sources conflict or do not support a conclusion, report
 `unsupported` or `conflict`; never interpolate from memory.
 
-Return no more than 700 words:
+Return no more than 500 words:
 
 - question
 - supported conclusion

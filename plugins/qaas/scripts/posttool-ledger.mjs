@@ -97,6 +97,21 @@ async function recordRejectedApproval(
       to: null,
       clear: ["source-checkout"],
     },
+    "source-read": {
+      phases: [
+        "DISCOVERING",
+        "CONTEXT_REVIEW",
+        "PROJECT_READY",
+        "TASK_DISCOVERY",
+        "PLAN_REVIEW",
+        "PLAN_APPROVED",
+        "IMPLEMENTING",
+        "DIAGNOSING",
+        "REPAIRING",
+      ],
+      to: null,
+      clear: ["source-read"],
+    },
     "readiness-fact": {
       phases: ["DISCOVERING"],
       to: null,
@@ -211,6 +226,17 @@ export async function handlePostToolUse(event, overrides = {}) {
               "TASK_DISCOVERY"
             ],
             "source-checkout": ["DISCOVERING"],
+            "source-read": [
+              "DISCOVERING",
+              "CONTEXT_REVIEW",
+              "PROJECT_READY",
+              "TASK_DISCOVERY",
+              "PLAN_REVIEW",
+              "PLAN_APPROVED",
+              "IMPLEMENTING",
+              "DIAGNOSING",
+              "REPAIRING",
+            ],
             "readiness-fact": ["DISCOVERING"],
             query: [
               "IMPLEMENTED_NOT_RUN",

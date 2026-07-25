@@ -21,6 +21,70 @@ const marketplacePath = path.join(
   "marketplace.json",
 );
 const packagePath = path.join(repositoryRoot, "package.json");
+const runtimeVersionTargets = [
+  {
+    path: path.join(
+      repositoryRoot,
+      "plugins",
+      "qaas",
+      "scripts",
+      "workflow-authority.mjs",
+    ),
+    pattern: /const PLUGIN_VERSION = "\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?";/u,
+    replacement: () => `const PLUGIN_VERSION = "${desiredVersion}";`,
+  },
+  {
+    path: path.join(
+      repositoryRoot,
+      "plugins",
+      "qaas",
+      "scripts",
+      "lib",
+      "approval-authority.mjs",
+    ),
+    pattern: /pluginVersion = "\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?",/u,
+    replacement: () => `pluginVersion = "${desiredVersion}",`,
+  },
+  {
+    path: path.join(
+      repositoryRoot,
+      "plugins",
+      "qaas",
+      "scripts",
+      "lib",
+      "hook-runtime.mjs",
+    ),
+    pattern:
+      /pluginVersion: overrides\.pluginVersion \?\? "\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?",/u,
+    replacement: () =>
+      `pluginVersion: overrides.pluginVersion ?? "${desiredVersion}",`,
+  },
+  {
+    path: path.join(
+      repositoryRoot,
+      "plugins",
+      "qaas",
+      "scripts",
+      "local-encode-mcp.mjs",
+    ),
+    pattern: /const SERVER_VERSION = "\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?";/u,
+    replacement: () => `const SERVER_VERSION = "${desiredVersion}";`,
+  },
+  {
+    path: path.join(
+      repositoryRoot,
+      "plugins",
+      "qaas",
+      "scripts",
+      "lib",
+      "streamable-mcp-client.mjs",
+    ),
+    pattern:
+      /clientInfo: \{ name: "qaas-docs-helper", version: "\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?" \},/u,
+    replacement: () =>
+      `clientInfo: { name: "qaas-docs-helper", version: "${desiredVersion}" },`,
+  },
+];
 const checkOnly = process.argv.includes("--check");
 
 function readJson(filePath) {
@@ -58,6 +122,22 @@ function synchronize(filePath, update) {
   fs.writeFileSync(filePath, stableJson(desired), "utf8");
 }
 
+function synchronizeRuntimeVersion({ path: filePath, pattern, replacement }) {
+  const current = fs.readFileSync(filePath, "utf8");
+  if (!pattern.test(current)) {
+    throw new Error(
+      `Runtime version marker is missing in ${path.relative(repositoryRoot, filePath)}`,
+    );
+  }
+  const desired = current.replace(pattern, replacement);
+  if (current === desired) return;
+  if (checkOnly) {
+    updates.push(path.relative(repositoryRoot, filePath));
+    return;
+  }
+  fs.writeFileSync(filePath, desired, "utf8");
+}
+
 synchronize(pluginManifestPath, (manifest) => {
   manifest.version = desiredVersion;
 });
@@ -75,6 +155,9 @@ synchronize(marketplacePath, (marketplace) => {
 synchronize(packagePath, (packageDocument) => {
   packageDocument.version = desiredVersion;
 });
+for (const target of runtimeVersionTargets) {
+  synchronizeRuntimeVersion(target);
+}
 
 if (checkOnly && updates.length > 0) {
   throw new Error(

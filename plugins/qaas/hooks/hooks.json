@@ -6,7 +6,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/bin/sh \"${CLAUDE_PLUGIN_ROOT}/scripts/hook-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/scripts/pretool-safety.mjs\"",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/scripts/hook-launcher.mjs",
+              "${CLAUDE_PLUGIN_ROOT}/scripts/pretool-safety.mjs"
+            ],
             "timeout": 30
           }
         ]
@@ -18,7 +22,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/bin/sh \"${CLAUDE_PLUGIN_ROOT}/scripts/hook-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/scripts/posttool-ledger.mjs\"",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/scripts/hook-launcher.mjs",
+              "${CLAUDE_PLUGIN_ROOT}/scripts/posttool-ledger.mjs"
+            ],
             "timeout": 30
           }
         ]
@@ -30,7 +38,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/bin/sh \"${CLAUDE_PLUGIN_ROOT}/scripts/hook-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/scripts/posttool-ledger.mjs\"",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/scripts/hook-launcher.mjs",
+              "${CLAUDE_PLUGIN_ROOT}/scripts/posttool-ledger.mjs"
+            ],
             "timeout": 30
           }
         ]
@@ -42,7 +54,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/bin/sh \"${CLAUDE_PLUGIN_ROOT}/scripts/hook-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/scripts/session-state.mjs\"",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/scripts/hook-launcher.mjs",
+              "${CLAUDE_PLUGIN_ROOT}/scripts/session-state.mjs"
+            ],
             "timeout": 30
           }
         ]
@@ -53,7 +69,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/bin/sh \"${CLAUDE_PLUGIN_ROOT}/scripts/hook-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/scripts/session-state.mjs\"",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/scripts/hook-launcher.mjs",
+              "${CLAUDE_PLUGIN_ROOT}/scripts/session-state.mjs"
+            ],
             "timeout": 10
           }
         ]
@@ -65,7 +85,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/bin/sh \"${CLAUDE_PLUGIN_ROOT}/scripts/hook-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/scripts/session-state.mjs\"",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/scripts/hook-launcher.mjs",
+              "${CLAUDE_PLUGIN_ROOT}/scripts/session-state.mjs"
+            ],
             "timeout": 10
           }
         ]
@@ -77,7 +101,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/bin/sh \"${CLAUDE_PLUGIN_ROOT}/scripts/hook-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/scripts/session-state.mjs\"",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/scripts/hook-launcher.mjs",
+              "${CLAUDE_PLUGIN_ROOT}/scripts/session-state.mjs"
+            ],
             "timeout": 10
           }
         ]
@@ -88,7 +116,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/bin/sh \"${CLAUDE_PLUGIN_ROOT}/scripts/hook-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/scripts/session-state.mjs\"",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/scripts/hook-launcher.mjs",
+              "${CLAUDE_PLUGIN_ROOT}/scripts/session-state.mjs"
+            ],
             "timeout": 10
           }
         ]
@@ -100,7 +132,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/bin/sh \"${CLAUDE_PLUGIN_ROOT}/scripts/hook-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/scripts/session-state.mjs\"",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/scripts/hook-launcher.mjs",
+              "${CLAUDE_PLUGIN_ROOT}/scripts/session-state.mjs"
+            ],
             "timeout": 10
           }
         ]

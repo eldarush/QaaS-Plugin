@@ -21,6 +21,13 @@ import {
   attestDocumentationSourceConfiguration,
   QAAS_DOCS_CONFIGURATION_NAMES,
 } from "./docs-resolver.mjs";
+import {
+  attestConfiguredSourceConfiguration,
+} from "./source-read-adapter.mjs";
+import {
+  computePackageSnapshot,
+  resolveProjectPackageSource,
+} from "./package-snapshot.mjs";
 import { analyzeMcpTool } from "./mcp-analyzer.mjs";
 import {
   actionNeedsApproval,
@@ -123,7 +130,7 @@ export function hookEnvironment(event, overrides = {}) {
     projectRoot,
     pluginRoot,
     pluginData: overrides.pluginData ?? env.CLAUDE_PLUGIN_DATA ?? null,
-    pluginVersion: overrides.pluginVersion ?? "0.1.0",
+    pluginVersion: overrides.pluginVersion ?? "0.2.0",
   };
 }
 
@@ -292,6 +299,34 @@ function parseMcpToolName(toolName) {
   };
 }
 
+const LOCAL_ENCODER_TOOL_NAME = "mcp__qaas_local__encode_text";
+const LOCAL_ENCODER_MAX_BYTES = 32 * 1024;
+
+function classifyLocalEncoder(toolName, input) {
+  if (toolName !== LOCAL_ENCODER_TOOL_NAME) return null;
+  if (
+    Array.isArray(input) ||
+    Object.getPrototypeOf(input) !== Object.prototype ||
+    Object.keys(input).length !== 1 ||
+    !Object.hasOwn(input, "text") ||
+    typeof input.text !== "string"
+  ) {
+    throw new Error(
+      "Local encoder requires exactly one string field named text",
+    );
+  }
+  if (Buffer.byteLength(input.text, "utf8") > LOCAL_ENCODER_MAX_BYTES) {
+    throw new Error("Local encoder input exceeds 32 KiB");
+  }
+  if (secretFindings(input.text).length > 0) {
+    throw new Error("Local encoder input contains credential-like data");
+  }
+  return {
+    actionClass: "ordinary-read",
+    helper: "qaas-local-encode-text",
+  };
+}
+
 const READ_ONLY_HELPERS = new Set([
   "doctor.mjs",
   "validate-readiness.mjs",
@@ -315,6 +350,28 @@ function quoteProcessArgument(value) {
   return `'${String(value).replaceAll("'", "'\\''")}'`;
 }
 
+function helperNamedArgument(args, name) {
+  const flag = `--${name}`;
+  const values = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const token = args[index];
+    if (token === flag) {
+      const value = args[index + 1];
+      if (typeof value !== "string" || value.startsWith("--")) {
+        throw new Error(`${flag} requires one value`);
+      }
+      values.push(value);
+      index += 1;
+    } else if (token.startsWith(`${flag}=`)) {
+      values.push(token.slice(flag.length + 1));
+    }
+  }
+  if (values.length > 1) {
+    throw new Error(`${flag} may be specified only once`);
+  }
+  return values[0] ?? null;
+}
+
 async function classifyPluginHelper(command, input, context) {
   const tokenized = tokenizeSimpleCommand(command);
   if (!tokenized.ok || tokenized.tokens.length < 2) return null;
@@ -326,7 +383,7 @@ async function classifyPluginHelper(command, input, context) {
   const helper = normalizedScript.slice(placeholderPrefix.length);
   if (!READ_ONLY_HELPERS.has(helper) || helper.includes("/")) return null;
   for (const arg of args) {
-    if (/[$`<>;&|*?[\]~\r\n\0]/u.test(arg)) {
+    if (/[$`<>;|*[\]~\r\n\0]/u.test(arg)) {
       throw new Error("Plugin helper argument contains shell syntax");
     }
   }
@@ -349,26 +406,60 @@ async function classifyPluginHelper(command, input, context) {
   const configuredSource = ["docs-read.mjs", "source-read.mjs"].includes(
     helper,
   );
-  const sourceIndex = args.indexOf("--source");
   const source =
-    sourceIndex >= 0 && typeof args[sourceIndex + 1] === "string"
-      ? args[sourceIndex + 1]
-      : helper === "docs-read.mjs"
-        ? "qaas-docs"
-        : null;
+    helperNamedArgument(args, "source") ??
+    (helper === "docs-read.mjs" ? "qaas-docs" : null);
   const sourceConfigurationNames = {
-    gitlab: ["QAAS_GITLAB_URL"],
-    artifactory: ["QAAS_ARTIFACTORY_URL"],
-    nuget: ["QAAS_NUGET_FEED_URL"],
-    modules: ["QAAS_MODULES_REPO_URL"],
-    "common-hooks": ["QAAS_COMMON_HOOKS_REPO_URL"],
+    gitlab: [],
+    artifactory: [],
+    nuget: [],
+    modules: [],
+    "common-hooks": [],
     "qaas-docs": [...QAAS_DOCS_CONFIGURATION_NAMES],
   };
-  const configurationNames = sourceConfigurationNames[source] ?? [];
   const documentationConfiguration =
     source === "qaas-docs"
       ? await attestDocumentationSourceConfiguration(context.env)
       : null;
+  const reviewedBaseUrl = helperNamedArgument(args, "base-url");
+  let projectBaseUrl = reviewedBaseUrl;
+  const credentialEnv = helperNamedArgument(args, "credential-env");
+  if (source === "nuget") {
+    if (reviewedBaseUrl !== null) {
+      throw new Error(
+        "NuGet base URLs must come from current project package metadata",
+      );
+    }
+    const packageSnapshot = await computePackageSnapshot({
+      projectRoot: context.projectRoot,
+      env: context.env,
+    });
+    projectBaseUrl = resolveProjectPackageSource(
+      packageSnapshot,
+      helperNamedArgument(args, "package-source"),
+    ).url;
+  }
+  const configuredHttpSources = new Set([
+    "gitlab",
+    "artifactory",
+    "nuget",
+    "modules",
+    "common-hooks",
+  ]);
+  const endpointConfiguration =
+    source && configuredHttpSources.has(source)
+      ? attestConfiguredSourceConfiguration({
+          source,
+          env: context.env,
+          projectBaseUrl,
+          credentialEnv,
+          allowLegacyEnvironment: false,
+        })
+      : null;
+  const configurationNames =
+    endpointConfiguration?.configurationNames ??
+    sourceConfigurationNames[source] ??
+    [];
   const configurationDigest =
     documentationConfiguration?.digest ??
     sha256(
@@ -398,11 +489,28 @@ async function classifyPluginHelper(command, input, context) {
               helper,
               args,
               configurationDigest,
+              endpointDigest:
+                endpointConfiguration?.endpointDigest ??
+                documentationConfiguration?.builtInEndpointDigests?.docs ??
+                null,
             }),
             configurationNames,
             configurationDigest,
+            reviewedInputDigest: endpointConfiguration
+              ? sha256({
+                  baseUrl: projectBaseUrl,
+                  credentialEnv,
+                  packageSource: helperNamedArgument(
+                    args,
+                    "package-source",
+                  ),
+                })
+              : null,
             ...(documentationConfiguration
               ? { documentationConfiguration }
+              : {}),
+            ...(endpointConfiguration
+              ? { endpointConfiguration }
               : {}),
             immutableLocator: true,
           },
@@ -865,6 +973,8 @@ export async function classifyToolCall(event, context, authority = null) {
   }
   const mcp = parseMcpToolName(toolName);
   if (mcp) {
+    const localEncoder = classifyLocalEncoder(toolName, input);
+    if (localEncoder) return localEncoder;
     if (!authority) throw new Error("MCP use requires protected capability authority");
     const registry = await loadCapabilityRegistry(authority);
     const analysis = analyzeMcpTool(
