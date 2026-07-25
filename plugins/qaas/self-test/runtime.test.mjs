@@ -310,6 +310,45 @@ test("C# planning keeps an exact implementation-closure gate", async () => {
   assert.match(checklist.replace(/\s+/gu, " "), /stop for a revised plan/u);
 });
 
+test("planning separates authority facts from approval-bound local choices", async () => {
+  const sources = Object.fromEntries(
+    await Promise.all(
+      [
+        ["workflow", "skills/qaas-workflow/SKILL.md"],
+        ["planner", "agents/test-planner.md"],
+        [
+          "checklist",
+          "references/test-authoring/authoring-checklist.md",
+        ],
+        ["yaml", "skills/author-qaas-yaml/SKILL.md"],
+      ].map(async ([name, relativePath]) => [
+        name,
+        (await readFile(path.join(pluginRoot, relativePath), "utf8")).replace(
+          /\s+/gu,
+          " ",
+        ),
+      ]),
+    ),
+  );
+  for (const name of ["workflow", "planner"]) {
+    assert.match(sources[name], /authority facts/iu, name);
+    assert.match(sources[name], /project-local identifiers/iu, name);
+    assert.match(sources[name], /plan approval/iu, name);
+    assert.match(sources[name], /external (?:behavior|contract)/iu, name);
+    assert.match(sources[name], /QaaS semantics/iu, name);
+  }
+  assert.match(
+    sources.checklist,
+    /`resolved` does not mean user-originated/u,
+  );
+  assert.match(
+    sources.checklist,
+    /implementation-local identifier or organization choice may be resolved as a disclosed planner proposal/u,
+  );
+  assert.match(sources.yaml, /Minimal local anchor/u);
+  assert.match(sources.yaml, /used only after plan approval/u);
+});
+
 test("planning binds exact write bytes and preserves literal semantic order", async () => {
   const sources = Object.fromEntries(
     await Promise.all(

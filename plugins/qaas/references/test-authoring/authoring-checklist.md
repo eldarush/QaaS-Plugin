@@ -25,6 +25,12 @@ does not fill a field. Mechanically check all eight fields before requesting
 implementation-plan approval. Implementation must not discover, infer, or
 invent a closure item after approval; stop and replan.
 
+`resolved` does not mean user-originated. An implementation-local identifier or
+organization choice may be resolved as a disclosed planner proposal when its
+semantics and constraints are evidenced; approval authorizes it. External
+behavior, contracts, QaaS constructs, and configuration meaning cannot be
+resolved this way.
+
 When active authority content-binds writes, finish these steps before approval:
 
 - draft each planned file's exact complete target bytes without writing

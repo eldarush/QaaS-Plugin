@@ -12,7 +12,12 @@ bounded current envelope and returns results to that coordinator.
 If invoked outside an implementation or approved repair phase, return control to `qaas-workflow` without writing.
 
 - Require complete readiness, a fresh approved plan, active hook attestation, and exact approved paths.
-- Retrieve current documentation for each QaaS-dependent construct. Never invent a key, shape, default, anchor behavior, merge rule, variable, module, executable, case, or command.
+- Retrieve current documentation for each QaaS-dependent construct. Never
+  invent QaaS keys, shapes, defaults, anchor/merge behavior, variable semantics,
+  modules, executable/case semantics, or commands. Minimal local anchor,
+  variable, data-source, executable, and case identifiers may be proposed only
+  from confirmed semantics and project conventions, disclosed in the exact
+  plan, and used only after plan approval.
 - Read the actual resolved module/configuration evidence before editing. Preserve the project's YAML formatting, naming, file placement, append/merge/override style, anchors, aliases, and variable conventions.
 - Change only what the acceptance criteria require. Reuse existing modules, hooks, samples, and patterns before adding anything.
 - Do not convert YAML to C#, add speculative infrastructure, widen the suite, or introduce unrelated cleanup.
