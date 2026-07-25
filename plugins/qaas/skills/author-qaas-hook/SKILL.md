@@ -14,6 +14,18 @@ Run only inside a fresh approved implementation or repair envelope.
 1. Prove from current QaaS documentation and installed package references that configuration alone cannot express the accepted behavior.
 2. Limit work to an external Type A assertion, generator, probe, or mocker processor. If the request needs a core protocol, serializer, policy, transport, storage integration, or any QaaS framework source change, stop as unsupported and tell the coordinator what evidence is missing or why Firefly is needed.
 3. Establish the documented contract, runtime discovery mechanism, configuration record fields, package, existing call sites, and YAML/C# use. Do not invent interface names or signatures.
+   - Treat every documentation-backed declaration example as an exact declaration
+     shape: copy its documented attributes, accessibility, modifiers, type,
+     property/accessor form, initializer, and constructor form. Do not replace a
+     shown shape with an equivalent-looking C# idiom.
+   - Do not add undocumented attributes, modifiers, or declaration features.
+     Current documentation and compatible project evidence must show each one
+     for that exact contract. In particular, do not introduce C# `required`
+     merely because a documented init-only property has a validation attribute.
+   - Implement the accepted hook behavior, including its decision, produced
+     values, failures, and messages, from the exact semantic contract. A hook
+     body may not be a stub, no-op, `yield break`, unconditional success/pass
+     result, or other placeholder that bypasses the accepted oracle.
 4. Return an explicit dependency closure for every selected base class, interface, and discovery API. Prove its compatible provider is installed; otherwise require the exact owning project/props/lock path, package change, and restore action in a fresh plan before implementation.
 5. Prefer a verified shared Common Hooks package. Add focused project-local or external hook code only when the approved plan requires it.
 6. Keep the implementation minimal, documented, convention-compliant, secret-free, and free of commented-out code.

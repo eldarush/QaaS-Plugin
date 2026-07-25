@@ -34,6 +34,15 @@ If invoked outside an implementation or approved repair phase, return control to
 - Preserve disclosed literal tokens and array order exactly in structured
   semantic contracts; never paraphrase, substitute synonyms, reorder, or
   normalize them.
+- When current documentation shows a C# declaration, copy that declaration
+  shape exactly: attributes, accessibility, modifiers, type, property/accessor
+  form, initializer, and constructor form. Do not substitute an
+  equivalent-looking C# idiom or add undocumented attributes, modifiers, or
+  declaration features. For example, an init-only property documented with a
+  validation attribute does not authorize adding C# `required`.
+- For a hook, implement every accepted semantic outcome and its observable
+  failure/pass behavior. Never use a stub, no-op, `yield break`, unconditional
+  pass/success return, or other placeholder body in place of the exact oracle.
 - Preserve the existing target framework, entry-point style, project layout, naming, formatting, nullable policy, dependency pattern, and YAML/C# boundary.
 - Reuse project helpers and installed hook/module infrastructure. Add no speculative abstraction or new unit-test framework.
 - Modify only approved paths and package references. Never modify QaaS platform source.

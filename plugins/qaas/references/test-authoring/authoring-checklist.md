@@ -43,6 +43,22 @@ In every structured semantic contract, preserve disclosed literal tokens and
 array order exactly. Never paraphrase, substitute synonyms, reorder, or
 normalize them.
 
+## C# declaration and hook-behavior fidelity
+
+For every documented C# declaration shape, copy the shown attributes,
+accessibility, modifiers, type, property/accessor form, initializer, and
+constructor form exactly. Do not add undocumented attributes, modifiers, or
+declaration features unless current documentation and compatible project
+evidence show each one for that exact contract. A validation attribute on an
+init-only property does not authorize C# `required` or any other undocumented
+modifier.
+
+For a custom hook, the approved semantic contract must state the observable
+decision, produced values, failures, and messages that the hook implements.
+The body must implement those outcomes; a stub, no-op, `yield break`,
+unconditional pass/success return, or other placeholder is not an
+implementation and requires a revised plan rather than approval.
+
 Before editing:
 
 - readiness and exact-plan approval are current

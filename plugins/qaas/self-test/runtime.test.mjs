@@ -310,6 +310,36 @@ test("C# planning keeps an exact implementation-closure gate", async () => {
   assert.match(checklist.replace(/\s+/gu, " "), /stop for a revised plan/u);
 });
 
+test("C# hook authoring preserves documented declaration shapes and semantics", async () => {
+  const [hookAuthoring, csharpAuthoring, checklist] = await Promise.all([
+    readFile(
+      path.join(pluginRoot, "skills", "author-qaas-hook", "SKILL.md"),
+      "utf8",
+    ),
+    readFile(
+      path.join(pluginRoot, "skills", "author-qaas-csharp", "SKILL.md"),
+      "utf8",
+    ),
+    readFile(
+      path.join(
+        pluginRoot,
+        "references",
+        "test-authoring",
+        "authoring-checklist.md",
+      ),
+      "utf8",
+    ),
+  ]);
+  for (const text of [hookAuthoring, csharpAuthoring, checklist]) {
+    const normalized = text.replace(/\s+/gu, " ");
+    assert.match(normalized, /declaration shape/u);
+    assert.match(normalized, /undocumented (?:attributes, modifiers|modifier)/u);
+    assert.match(normalized, /C# `required`/u);
+    assert.match(normalized, /stub, no-op, `yield break`/u);
+    assert.match(normalized, /unconditional (?:success\/pass|pass\/success)/u);
+  }
+});
+
 test("planning separates authority facts from approval-bound local choices", async () => {
   const sources = Object.fromEntries(
     await Promise.all(
