@@ -233,7 +233,7 @@ export function createStreamableMcpCaller({
       {
         protocolVersion: PROTOCOL_VERSION,
         capabilities: {},
-        clientInfo: { name: "qaas-docs-helper", version: "0.2.0" },
+        clientInfo: { name: "qaas-docs-helper", version: "0.3.0" },
       },
       64 * 1024,
     );

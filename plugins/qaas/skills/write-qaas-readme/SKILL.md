@@ -1,5 +1,5 @@
 ---
-description: Write a minimal factual README update for a QaaS test project from approved context and current evidence.
+description: Internal documentation specialist used only when qaas-workflow delegates an approved minimal factual README change for a mapped QaaS test project.
 user-invocable: false
 ---
 

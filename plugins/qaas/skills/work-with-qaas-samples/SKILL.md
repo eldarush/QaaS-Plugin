@@ -1,5 +1,5 @@
 ---
-description: Plan or apply safe, schema-aware QaaS sample changes without guessing field semantics.
+description: Internal sample specialist used only when qaas-workflow delegates an approved schema-aware QaaS sample analysis or change with protected-field rules.
 user-invocable: false
 ---
 

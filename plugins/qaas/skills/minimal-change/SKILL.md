@@ -1,5 +1,5 @@
 ---
-description: Review an approved QaaS change for the smallest convention-preserving diff and remove speculative scope.
+description: Internal review specialist used only when qaas-workflow delegates a minimality check for an approved QaaS change and its convention-preserving diff.
 user-invocable: false
 ---
 

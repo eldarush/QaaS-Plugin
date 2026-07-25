@@ -1,5 +1,9 @@
 # Project context contract
 
+Use the [readiness/context fact scaffold](artifact-scaffolds.md#readinesscontext-fact)
+only to understand the authority shape; it never replaces evidence or the
+complete readiness matrix.
+
 Approved context is project-only:
 
 ```text

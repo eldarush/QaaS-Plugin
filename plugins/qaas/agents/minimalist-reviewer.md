@@ -19,7 +19,8 @@ For each changed hunk, classify it as:
 
 Check reuse, file count, dependency additions, abstraction, formatting churn, naming/layout consistency, sample/hook/module reuse, commented-out code, protected/unchanged paths, and expected diff envelope.
 
-Return a concise prioritized table with path, classification, reason, and safe
-next action. Never suggest deleting or renaming a file; when an obsolete file
-exists, say that user action and re-fingerprinting would be required. Cap the
-entire response at 500 words.
+Return at most 500 words with `status` (`OK`, `BLOCKED`, or `CONFLICT`),
+`facts`, `unknowns`, and one `nextAction`, followed by a prioritized
+`details` table with path, classification, evidence-based reason, and safe
+action. Never suggest deleting or renaming; for an obsolete file, state that
+user action and re-fingerprinting are required.

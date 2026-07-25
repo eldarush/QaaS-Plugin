@@ -1,5 +1,5 @@
 ---
-description: Author the minimal approved C#-based QaaS test change using current docs and existing project conventions.
+description: Internal implementation specialist used only when qaas-workflow delegates an approved C#-based QaaS test-project change with current documentation and project conventions.
 user-invocable: false
 ---
 

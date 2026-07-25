@@ -1,6 +1,6 @@
 {
   "name": "qaas-claude-code-plugin",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Validation and packaging tools for the Firefly QaaS Claude Code plugin.",
   "type": "module",

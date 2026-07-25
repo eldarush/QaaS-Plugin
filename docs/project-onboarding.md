@@ -16,8 +16,9 @@ Run Claude Code from the repository root. Have available:
 - A similar project used as a style reference, if one exists.
 - Environment ownership and the operations that QA is permitted to perform.
 
-For a large project, use extra-high effort and ask Claude to **use dynamic
-workflow**. Read-only mapping may use forked subagents with bounded scopes.
+For a large project, use `/effort xhigh` when the installed Claude Code/model
+supports it and ask Claude to **use dynamic workflow**. Read-only mapping may
+use forked subagents with bounded scopes.
 
 ## Interview sequence
 

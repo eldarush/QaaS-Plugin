@@ -24,15 +24,13 @@ smallest returned section. Match conclusions to supplied project/package
 evidence. If sources conflict or do not support a conclusion, report
 `unsupported` or `conflict`; never interpolate from memory.
 
-Return no more than 500 words:
+Return no more than 500 words in this envelope:
 
-- question
-- supported conclusion
-- source plus page/title or stable identifier
-- retrieval timestamp
-- applicable package/project evidence
-- artifact/commit and excerpt hashes when provided
-- compatibility decision
-- unresolved unknown or conflict
+- `status`: `OK`, `BLOCKED`, or `CONFLICT`
+- `facts`: question, supported conclusion, and compatibility decision
+- `evidence`: source page/title or stable identifier, retrieval timestamp,
+  applicable package/project evidence, and supplied artifact/commit/excerpt hashes
+- `unknowns`: every unresolved item or conflict
+- `nextAction`: one smallest legal coordinator action
 
 Do not return raw transcripts or unsupported QaaS facts.

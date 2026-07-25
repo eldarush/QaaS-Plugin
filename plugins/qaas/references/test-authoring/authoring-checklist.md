@@ -70,7 +70,11 @@ Before editing:
 - configuration composition and rendered module behavior are understood
 - input, output, oracle, correlation, and sample rules are explicit
 - any applicable C# implementation closure above is exact and approved
-- every delay, duration, timeout, and rate follows current docs for meaning/units, direct user confirmation for intended value, and signed project/render evidence for the final configured value; existing patterns and bare numeric thresholds are not authority
+- every delay, duration, timeout, and rate has docs-proven meaning/unit and a
+  user-confirmed intended value; the approved value is written during
+  implementation, then proven configured by signed template render, while only
+  runtime evidence proves observed behavior; patterns and bare numbers are not
+  authority
 - existing project patterns and reusable hooks/modules are identified
 
 While editing:

@@ -1,8 +1,9 @@
 # Evaluation method
 
 The public repository validates deterministic plugin contracts. A separate
-private lab challenges end-to-end behavior without publishing system fixtures,
-oracles, fault mutants, transcripts, raw results, or credentials.
+private lab challenges staged workflow and response contracts without
+publishing system fixtures, oracles, fault mutants, transcripts, raw results,
+or credentials.
 
 ## Public checks
 
@@ -19,6 +20,11 @@ oracles, fault mutants, transcripts, raw results, or credentials.
   fingerprints, redaction, shell/MCP classification, and phase gates.
 - Hook-contract simulations for allowed, denied, stale, replay, and malformed
   events.
+- Twenty dependency-free synthetic project-shape suites spanning Windows/Linux
+  paths, YAML/C#, HTTP, Kafka, RabbitMQ, gRPC, TCP/binary, JSON/XML/Protobuf,
+  modules, hooks, upgrades, diagnosis, safety, Unicode, case collisions, and
+  large repositories. These test bounded candidate discovery and conditional
+  interview routing; they do not execute QaaS or measure model quality.
 - Deterministic release ZIP generation and file checksums.
 
 GitHub runs these dependency-free checks on Windows and Linux. If a compatible
@@ -88,9 +94,9 @@ available to the corresponding Claude stage. Fresh agents forward-test skills
 to expose hidden assumptions.
 
 This proxy can find workflow and prompt defects, but it cannot establish
-MiniMax M2.7 quality or Claude Code >=2.1.180 hook semantics. The public preview
-therefore makes no pass-rate, speed, coverage, scenario-count, or comparative
-performance claim.
+MiniMax M2.7 quality or Claude Code >=2.1.180 hook semantics. Published suite
+counts describe test inventory only; the public preview makes no pass-rate,
+speed, coverage, or comparative performance claim.
 
 ## Release gates
 

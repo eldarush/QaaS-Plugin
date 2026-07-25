@@ -60,6 +60,7 @@ export async function mirrorProjectState(
     remainingWork: state.remainingWork,
     evidencePaths: state.evidencePaths,
     blocker: state.blocker,
+    awaitingUser: state.awaitingUser === true,
     nextLegalAction: state.nextLegalAction,
     updatedAt: state.updatedAt,
   };

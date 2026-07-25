@@ -1,5 +1,8 @@
 # Readiness and approvals
 
+For compact validator-aligned shapes and the artifact-versus-review digest
+boundary, load [lifecycle artifact scaffolds](artifact-scaffolds.md).
+
 Readiness statuses are `evidenced`, `user_confirmed`, `not_applicable`, `unknown`, and `contradicted`. A project or task is ready only when every required fact is in the first three states, no contradiction remains, all required sources are accessible, and the user approved the complete restatement. Hard gaps cannot be waived.
 
 Implementation-plan approval binds the canonical plan digest to:
@@ -60,14 +63,14 @@ reused.
 Every execution window has a reviewed wall-clock ceiling of no more than three hours. This ceiling is a safety maximum, not a default load duration. The retry budget defaults to three and may not exceed three; separately propose three successful repetitions by default. The user reviews the retry/repeat count, expected cost, and ceiling before approval, with explicit attention to long or expensive runs. Rate, load duration, and test timeout are added only when the user explicitly requested stress behavior.
 
 Every delay, duration, timeout, rate, and wall-clock field records its unit and
-the evidence that proves it. Current documentation first proves supported
-meaning and units; direct user confirmation then establishes the intended task
-value; signed project/render evidence finally proves the exact configured
-value. Existing configuration may corroborate current behavior but cannot
-supply intended timing authority. A model inference or a value copied from
-another test is tentative evidence only. Take particular care around
-milliseconds versus seconds. A bare numeric threshold is never copied into
-context, a plan, configuration, a command, or a verdict.
+stage-specific evidence. Current docs prove supported meaning/unit; the user
+confirms the intended value; the plan binds that intent without claiming the
+new value is already configured; implementation writes it; signed template
+render evidence then proves the configured value; runtime evidence alone proves
+observed behavior. Existing configuration may corroborate current behavior but
+cannot choose intent. An inference or copied value is tentative only. Take
+particular care with milliseconds versus seconds. A bare numeric threshold is
+never copied into context, plan, configuration, command, or verdict.
 
 A non-deleting infrastructure mutation requires a separate plan naming exact tool, resource, action, environment, side effects, rollback limitation, and verification. It can never authorize deletion.
 

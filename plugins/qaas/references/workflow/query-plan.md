@@ -1,5 +1,8 @@
 # Bounded observability query transaction
 
+For a compact validator-aligned local query shape and digest nesting, load the
+[query-plan scaffold](artifact-scaffolds.md#query-plan).
+
 An execution plan never grants observability access:
 `execution-plan.json.observabilityQueries` is always the empty array. When the
 accepted runtime oracle needs task-relevant external evidence, the coordinator

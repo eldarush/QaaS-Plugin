@@ -3,7 +3,7 @@ import { createInterface } from "node:readline";
 import { assertNoSecrets } from "./lib/redact.mjs";
 
 const SERVER_NAME = "qaas-local";
-const SERVER_VERSION = "0.2.0";
+const SERVER_VERSION = "0.3.0";
 const MAX_TEXT_BYTES = 32 * 1024;
 const SUPPORTED_PROTOCOL_VERSIONS = new Set([
   "2025-06-18",

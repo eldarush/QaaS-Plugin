@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import os from "node:os";
 import { createInterface } from "node:readline";
 import path from "node:path";
 import test from "node:test";
@@ -20,6 +22,33 @@ const serverScript = path.join(
   "scripts",
   "local-encode-mcp.mjs",
 );
+const inventoryScript = path.join(
+  pluginRoot,
+  "scripts",
+  "project-inventory.mjs",
+);
+
+function runNode(script, args = [], options = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [script, ...args], {
+      shell: false,
+      windowsHide: true,
+      ...options,
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString("utf8");
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString("utf8");
+    });
+    child.once("error", reject);
+    child.once("close", (code, signal) => {
+      resolve({ code, signal, stdout, stderr });
+    });
+  });
+}
 
 function startServer(t) {
   const child = spawn(process.execPath, [serverScript], {
@@ -231,6 +260,56 @@ test("safety hook allows only the exact local encoder MCP call", async () => {
     ),
     /requires protected capability authority/u,
   );
+});
+
+test("bounded inventory CLI is no-argument, environment-rooted, and hook-classified read-only", async () => {
+  const projectRoot = await mkdtemp(path.join(os.tmpdir(), "qaas-inventory-cli-"));
+  await mkdir(path.join(projectRoot, "TestData"));
+  await writeFile(
+    path.join(projectRoot, "smoke.qaas.yaml"),
+    "protocol: http\nkind: smoke\n",
+    "utf8",
+  );
+  await writeFile(
+    path.join(projectRoot, "TestData", "request.json"),
+    '{"id":"candidate"}\n',
+    "utf8",
+  );
+
+  const result = await runNode(inventoryScript, [], {
+    env: { ...process.env, CLAUDE_PROJECT_DIR: projectRoot },
+  });
+  assert.equal(result.code, 0, result.stderr);
+  const inventory = JSON.parse(result.stdout);
+  assert.equal(inventory.authority, "candidate-evidence-only");
+  assert.equal(inventory.root, ".");
+  assert.ok(Buffer.byteLength(result.stdout, "utf8") <= 24 * 1024);
+
+  const rejected = await runNode(inventoryScript, ["unexpected"], {
+    env: { ...process.env, CLAUDE_PROJECT_DIR: projectRoot },
+  });
+  assert.notEqual(rejected.code, 0);
+  assert.match(rejected.stderr, /accepts no arguments/u);
+
+  const event = {
+    hook_event_name: "PreToolUse",
+    session_id: "inventory-helper-session",
+    tool_use_id: "inventory-helper-call",
+    tool_name: "Bash",
+    tool_input: {
+      command:
+        'node "${CLAUDE_PLUGIN_ROOT}/scripts/project-inventory.mjs"',
+    },
+  };
+  const context = hookEnvironment(event, {
+    projectRoot,
+    pluginRoot,
+    env: { CLAUDE_PROJECT_DIR: projectRoot },
+  });
+  const classification = await classifyToolCall(event, context);
+  assert.equal(classification.actionClass, "ordinary-read");
+  assert.equal(classification.helper, "project-inventory.mjs");
+  assert.match(classification.updatedInput.command, /project-inventory\.mjs/u);
 });
 
 test("plugin validation and weak-model phase budgets include the local encoder", async () => {

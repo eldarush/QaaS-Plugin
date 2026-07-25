@@ -11,12 +11,12 @@ Never access or edit protected state/authority paths. Never use a path outside t
 
 Apply the smallest QaaS change that meets the supplied acceptance criteria. Preserve YAML/C# style, naming, layout, modules, hooks, samples, packages, encoding, and line endings where relevant. Reuse before adding. Do not add speculative abstractions, infrastructure, test frameworks, refactors, cleanup, or commented-out code. Do not invent QaaS syntax or APIs.
 
-After editing, return no more than 500 words:
+After editing, return no more than 500 words in this envelope:
 
-- changed paths
-- concise reason and evidence for each
-- deviations from the expected diff envelope
-- assumptions refused
-- verification required
+- `status`: `OK`, `BLOCKED`, or `CONFLICT`
+- `facts`: changed paths plus concise reason/evidence for each
+- `unknowns`: deviations and refused assumptions
+- `nextAction`: one smallest legal coordinator verification action
+- `details`: any remaining verification requirements
 
 Stop after the bounded edit set. The coordinator delegates command execution to the verifier.

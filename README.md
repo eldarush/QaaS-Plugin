@@ -6,16 +6,50 @@ Claude Code a disciplined way to learn the project, retrieve current QaaS
 documentation, plan the exact change with the user, implement only that plan,
 and optionally run and diagnose the result.
 
-The first release is deliberately human-in-the-loop. It is designed to make
+This stage is deliberately human-in-the-loop. It is designed to make
 test creation faster and QaaS adoption easier without allowing a model to fill
 unknowns with guesses. It is not a general test generator, does not change the
 QaaS framework, does not manage a test environment by default, and does not
 claim fully autonomous QA.
 
-Version `0.2.0` is a Codex-proxy preview. The dependency-free plugin checks and
+Version `0.3.0` is a Codex-proxy preview. The dependency-free plugin checks and
 private proxy evaluation have been exercised outside the target environment;
 acceptance with Claude Code >=2.1.180 and MiniMax M2.7 remains a separate
 air-gapped validation step.
+
+## Start in 60 seconds
+
+```text
+/plugin marketplace add eldarush/QaaS-Plugin
+/plugin install qaas@qaas-plugin
+/reload-plugins
+/qaas:doctor
+/qaas:onboard
+```
+
+After onboarding is reviewed and approved, describe the change naturally, for
+example: “write this test: publish the supplied order sample with `riskLevel`
+set to `high`, then verify the output has `reviewRequired=true`.” Claude routes
+that request through the same plan and approval gates as `/qaas:plan`. It
+implements only after plan approval, performs static verification, and asks for
+a separate approval before an optional `/qaas:run`.
+
+## Contents
+
+- [What it can help with](#what-it-can-help-with)
+- [Requirements](#requirements)
+- [Public or offline installation](#install-from-the-public-marketplace)
+- [Six commands](#six-commands)
+- [One-time project onboarding](#one-time-project-onboarding)
+- [Understanding and authority](#understanding-and-authority)
+- [Configuration](#configuration)
+- [Planning and implementation](#planning-and-implementation)
+- [Running and evidence](#running-and-evidence)
+- [Safety model](#safety-model)
+- [Update, rollback, and removal](#update-rollback-and-removal)
+- [Troubleshooting](#troubleshooting)
+- [Development and evaluation](#development-and-evaluation)
+- [Known limitations](#known-limitations)
 
 ## What it can help with
 
@@ -89,8 +123,9 @@ On Linux, use the same commands from the shell.
 
 Claude Code's command-line installer otherwise defaults to user scope. A
 user-scoped installation is still fail-closed—the hooks perform a strict no-op
-until the exact `/qaas:onboard` activation prompt is submitted in the current
-canonical project—but local scope reduces unnecessary global hook loading.
+until `/qaas:onboard` (optionally followed by focused onboarding arguments) is
+submitted in the current canonical project—but local scope reduces unnecessary
+global hook loading.
 
 Pin production-like environments to a reviewed tag, release bundle, or internal
 mirror instead of following an unreviewed branch. The release bundle contains
@@ -166,9 +201,9 @@ project, acquire a lease, repair state, or grant authority.
 ## One-time project onboarding
 
 Run `/qaas:onboard` from the root of each QaaS test repository. For a large or
-unfamiliar project, set the available reasoning control to extra-high and tell
-Claude to **use dynamic workflow**. The same setting is useful for a complex
-implementation after the plan is approved.
+unfamiliar project, use `/effort xhigh` when the installed Claude Code/model
+supports it and tell Claude to **use dynamic workflow**. The same setting is
+useful for a genuinely complex implementation after the plan is approved.
 
 Onboarding:
 
@@ -485,7 +520,10 @@ The demo system, golden QaaS projects, private scenario oracles, fault mutants,
 user simulator, raw results, and transcripts intentionally stay outside this
 public repository. The preview was challenged by multiple independent Codex
 agents simulating a weaker target model; that is useful proxy evidence, not a
-Claude Code/MiniMax result and not a performance comparison.
+Claude Code/MiniMax result and not a performance comparison. The public checks
+also build 20 synthetic project shapes to test bounded discovery and
+conditional interview routing across project styles; those suites do not
+execute QaaS or claim model performance.
 
 See [architecture](docs/architecture.md),
 [development](docs/development.md), and

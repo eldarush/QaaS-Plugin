@@ -164,7 +164,7 @@ async function initializeMetadata({
 export async function openAuthority({
   pluginData,
   projectRoot,
-  pluginVersion = "0.2.0",
+  pluginVersion = "0.3.0",
   create = false,
 }) {
   if (typeof pluginData !== "string" || pluginData.trim() === "") {

@@ -51,14 +51,17 @@ Produce a candidate plan containing:
   is `resolved` or `evidence-proven-inapplicable` and all three arrays contain
   concrete non-placeholder statements
 - documented unit and evidence for every delay, duration, timeout, and rate:
-  current documentation first proves supported meaning and units, direct user
-  confirmation then establishes the intended task value, and signed
-  project/render evidence finally proves the exact configured value; never
-  treat an existing pattern, model inference, or copied value as authority
+  current docs prove supported meaning/unit and the user confirms the intended
+  value; the plan binds that value without claiming it is already configured;
+  implementation must write it, a later signed template render must prove the
+  configured value, and runtime evidence alone proves observed behavior; never
+  treat an existing pattern, inference, or copied value as authority
 - blocking unknowns or contradictions
 
 Do not supply a missing QaaS command, key, type, package, version, or semantic
 choice from memory. This does not forbid the disclosed, approval-bound
-project-local proposals above. If any hard readiness item is absent, return
-`NOT_READY` with the smallest set of blocking facts. Keep the entire response,
-including its path table, at or below 500 words.
+project-local proposals above. Return `status` (`OK`, `BLOCKED`, or `CONFLICT`),
+`facts`, `evidence`, `unknowns`, one `nextAction`, and the candidate plan as
+`details`. If a hard readiness item is absent, use `BLOCKED` with the smallest
+set of blocking facts. Keep the entire response, including its path table, at
+or below 500 words.

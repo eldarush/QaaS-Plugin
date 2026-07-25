@@ -82,6 +82,7 @@ export function createInitialState({ projectId, now = new Date().toISOString() }
     remainingWork: [],
     evidencePaths: [],
     blocker: null,
+    awaitingUser: false,
     nextLegalAction: "Begin read-only discovery",
     updatedAt: now,
   };
@@ -105,6 +106,12 @@ export function validateState(state) {
   }
   if (!state.fingerprints || typeof state.fingerprints !== "object") {
     errors.push("fingerprints must be an object");
+  }
+  if (
+    state.awaitingUser !== undefined &&
+    typeof state.awaitingUser !== "boolean"
+  ) {
+    errors.push("awaitingUser must be a boolean");
   }
   return { valid: errors.length === 0, errors };
 }
@@ -153,6 +160,9 @@ export function transitionState(
     projectId: state.projectId,
     phase: to,
     sequence: state.sequence + 1,
+    awaitingUser: Object.hasOwn(patch, "awaitingUser")
+      ? patch.awaitingUser
+      : false,
     updatedAt: now,
   };
   if (to === "STALE" || to === "SAFETY_VIOLATION") {
@@ -213,6 +223,9 @@ export function checkpointState(
     projectId: state.projectId,
     phase: state.phase,
     sequence: state.sequence + 1,
+    awaitingUser: Object.hasOwn(patch, "awaitingUser")
+      ? patch.awaitingUser
+      : state.awaitingUser === true,
     updatedAt: now,
   };
   const event = {

@@ -1,5 +1,5 @@
 ---
-description: Add or adjust an approved external Type A QaaS assertion, generator, probe, or mocker processor.
+description: Internal implementation specialist used only when qaas-workflow delegates an approved external Type A QaaS assertion, generator, probe, or mocker processor change.
 user-invocable: false
 ---
 

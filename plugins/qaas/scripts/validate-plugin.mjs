@@ -29,6 +29,8 @@ const SCHEMAS = Object.freeze([
 const REQUIRED_SCRIPTS = Object.freeze([
   "doctor.mjs",
   "hook-launcher.mjs",
+  "interview-routes.mjs",
+  "project-inventory.mjs",
   "validate-readiness.mjs",
   "validate-plan.mjs",
   "validate-execution-plan.mjs",
@@ -45,6 +47,11 @@ const REQUIRED_SCRIPTS = Object.freeze([
   "docs-read.mjs",
   "source-read.mjs",
   "source-checkout.mjs",
+]);
+const REQUIRED_SUPPORT_FILES = Object.freeze([
+  "scripts/lib/project-evidence-inventory.mjs",
+  "scripts/lib/interview-route-selector.mjs",
+  "references/project-mapping/interview-routing.md",
 ]);
 
 async function exists(target) {
@@ -387,6 +394,11 @@ export async function validatePlugin({
   for (const script of REQUIRED_SCRIPTS) {
     if (!(await exists(path.join(pluginRoot, "scripts", script)))) {
       errors.push(`required script is missing: scripts/${script}`);
+    }
+  }
+  for (const relativePath of REQUIRED_SUPPORT_FILES) {
+    if (!(await exists(path.join(pluginRoot, relativePath)))) {
+      errors.push(`required support file is missing: ${relativePath}`);
     }
   }
   const hooks = await validateOwnHookConfiguration(pluginRoot);

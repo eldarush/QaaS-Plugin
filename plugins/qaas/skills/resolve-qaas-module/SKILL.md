@@ -1,5 +1,5 @@
 ---
-description: Resolve an actual QaaS module and its local overrides from approved local or configured sources.
+description: Internal mapping specialist used only when qaas-workflow delegates resolution of a QaaS module, its provenance, variables, composition, and local overrides.
 user-invocable: false
 ---
 

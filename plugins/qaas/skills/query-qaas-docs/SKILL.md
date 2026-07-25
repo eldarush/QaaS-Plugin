@@ -1,5 +1,5 @@
 ---
-description: Find a bounded, current, citable QaaS fact from configured documentation without loading a static fact base.
+description: Internal research specialist used only when qaas-workflow delegates a bounded current QaaS documentation query for a missing citable fact.
 user-invocable: false
 ---
 

@@ -87,6 +87,7 @@ import {
   describeMcpTransport,
 } from "../scripts/lib/streamable-mcp-client.mjs";
 import {
+  commitCheckpoint,
   commitTransition,
   createInitialState,
   transitionState,
@@ -1273,6 +1274,21 @@ function sessionEvent(sessionId, prompt) {
   };
 }
 
+function stopEvent(
+  sessionId,
+  stopHookActive = false,
+  lastAssistantMessage = undefined,
+) {
+  return {
+    hook_event_name: "Stop",
+    session_id: sessionId,
+    stop_hook_active: stopHookActive,
+    ...(lastAssistantMessage === undefined
+      ? {}
+      : { last_assistant_message: lastAssistantMessage }),
+  };
+}
+
 function sessionHandleFrom(output) {
   const text = output?.hookSpecificOutput?.additionalContext ?? "";
   const match = text.match(/\bSession handle: ([a-f0-9]{48})\b/u);
@@ -1320,6 +1336,27 @@ async function spawnObserved(program, args, options = {}) {
   const stderr = [];
   child.stdout.on("data", (chunk) => stdout.push(chunk));
   child.stderr.on("data", (chunk) => stderr.push(chunk));
+  const [exitCode, signal] = await once(child, "close");
+  return {
+    exitCode,
+    signal,
+    stdout: Buffer.concat(stdout).toString("utf8"),
+    stderr: Buffer.concat(stderr).toString("utf8"),
+  };
+}
+
+async function spawnWithInputObserved(program, args, input, options = {}) {
+  const child = spawn(program, args, {
+    windowsHide: true,
+    shell: false,
+    ...options,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  const stdout = [];
+  const stderr = [];
+  child.stdout.on("data", (chunk) => stdout.push(chunk));
+  child.stderr.on("data", (chunk) => stderr.push(chunk));
+  child.stdin.end(input);
   const [exitCode, signal] = await once(child, "close");
   return {
     exitCode,
@@ -2644,6 +2681,286 @@ test("ordinary prose cannot activate an unonboarded project", async () => {
   }
 });
 
+test("explicit onboarding accepts arguments in prompt and command-expansion events", async () => {
+  for (const [index, event] of [
+    [
+      0,
+      sessionEvent(
+        "argument-activation-session",
+        "/qaas:onboard focus on the reviewed component",
+      ),
+    ],
+    [
+      1,
+      {
+        hook_event_name: "UserPromptExpansion",
+        session_id: "expanded-activation-session",
+        prompt: "/qaas:onboard",
+        command_args: "focus on the reviewed component",
+      },
+    ],
+  ]) {
+    const item = await fixture(`qaas-argument-activation-${index}-`);
+    const activated = await handleSessionEvent(event, { env: item.env });
+    assert.match(sessionHandleFrom(activated), /^[a-f0-9]{48}$/u);
+    const context = await runtimeContext(item.env);
+    const state = (
+      await context.authority.readSigned("state/current.json")
+    ).payload;
+    assert.equal(state.phase, "UNONBOARDED");
+    assert.equal(state.awaitingUser, false);
+  }
+});
+
+test("onboarding rejects secret-like prompts before initial activation or refresh", async () => {
+  const syntheticToken = `${["gh", "p"].join("")}_${"a".repeat(24)}`;
+
+  const initial = await fixture("qaas-secret-onboarding-initial-");
+  const initialDenied = await handleSessionEvent(
+    sessionEvent(
+      "secret-onboarding-initial-session",
+      `/qaas:onboard token=${syntheticToken}`,
+    ),
+    { env: initial.env },
+  );
+  assert.equal(initialDenied.decision, "block");
+  assert.match(initialDenied.reason, /credential-like material/u);
+  await assert.rejects(access(initial.pluginData), { code: "ENOENT" });
+  assert.deepEqual(await readdir(initial.project), []);
+
+  const refresh = await fixture("qaas-secret-onboarding-refresh-");
+  const refreshSessionId = "secret-onboarding-refresh-session";
+  await handleSessionEvent(
+    sessionEvent(refreshSessionId, "/qaas:onboard"),
+    { env: refresh.env },
+  );
+  const refreshContext = await runtimeContext(refresh.env);
+  const before = (
+    await refreshContext.authority.readSigned("state/current.json")
+  ).payload;
+  const refreshDenied = await handleSessionEvent(
+    sessionEvent(
+      refreshSessionId,
+      `/qaas:onboard refresh token=${syntheticToken}`,
+    ),
+    { env: refresh.env },
+  );
+  assert.equal(refreshDenied.decision, "block");
+  assert.match(refreshDenied.reason, /credential-like material/u);
+  const after = (
+    await refreshContext.authority.readSigned("state/current.json")
+  ).payload;
+  assert.deepEqual(after, before);
+});
+
+test("active onboarding refresh invalidates prior context, approvals, and staged files", async () => {
+  const item = await fixture("qaas-active-context-refresh-");
+  const sessionId = "active-context-refresh-session";
+  const activated = await handleSessionEvent(
+    sessionEvent(sessionId, "/qaas:onboard"),
+    { env: item.env },
+  );
+  const handle = sessionHandleFrom(activated);
+  await runWorkflowAuthority(
+    ["discover", "--session-handle", handle],
+    item.env,
+  );
+  const context = await runtimeContext(item.env);
+  await context.authority.writeSigned(
+    "staging/context.json",
+    {
+      schemaVersion: "1.0",
+      projectId: context.authority.projectId,
+      files: {
+        ".claude/qaas/project.md": {
+          content: "# Stale project context\n",
+          sha256: sha256("# Stale project context\n"),
+        },
+      },
+      sequence: 0,
+    },
+    { expectedSequence: -1 },
+  );
+  await context.authority.writeSigned(
+    "approvals/context-refresh-fixture.json",
+    {
+      schemaVersion: "1.0",
+      projectId: context.authority.projectId,
+      approvalId: "context-refresh-fixture",
+      kind: "plan",
+      sessionId,
+      status: "active",
+      sequence: 0,
+    },
+    { expectedSequence: -1 },
+  );
+  let state = (
+    await context.authority.readSigned("state/current.json")
+  ).payload;
+  state = await commitTransition(
+    context.authority,
+    state,
+    "CONTEXT_REVIEW",
+    { reason: "Synthetic context review before refresh" },
+  );
+  state = await commitTransition(context.authority, state, "PROJECT_READY", {
+    reason: "Synthetic approved project context before refresh",
+    patch: {
+      contextDigest: sha256("stale-context"),
+      packageSnapshotDigest: sha256("stale-packages"),
+      approvedDigests: { context: sha256("stale-context-approval") },
+      fingerprints: {
+        onboardingFingerprint: sha256("stale-onboarding-fingerprint"),
+      },
+      completedWork: ["Old onboarding closure"],
+      remainingWork: ["Old planned work"],
+      evidencePaths: ["evidence/old.json"],
+      awaitingUser: true,
+    },
+  });
+  state = await commitTransition(
+    context.authority,
+    state,
+    "TASK_DISCOVERY",
+    {
+      reason: "Synthetic task discovery before refresh",
+      patch: { taskId: "stale-task" },
+    },
+  );
+  state = await commitTransition(context.authority, state, "PLAN_REVIEW", {
+    reason: "Synthetic plan review before refresh",
+  });
+  await commitTransition(context.authority, state, "PLAN_APPROVED", {
+    reason: "Synthetic approved plan before refresh",
+    patch: {
+      approvedDigests: {
+        context: sha256("stale-context-approval"),
+        plan: sha256("stale-plan-approval"),
+      },
+    },
+  });
+
+  const refreshed = await handleSessionEvent(
+    sessionEvent(
+      sessionId,
+      "/qaas:onboard refresh after independently reviewed project changes",
+    ),
+    { env: item.env },
+  );
+  assert.match(sessionHandleFrom(refreshed), /^[a-f0-9]{48}$/u);
+  state = (
+    await context.authority.readSigned("state/current.json")
+  ).payload;
+  assert.equal(state.phase, "DISCOVERING");
+  assert.equal(state.taskId, null);
+  assert.equal(state.contextDigest, null);
+  assert.equal(state.packageSnapshotDigest, null);
+  assert.deepEqual(state.approvedDigests, {});
+  assert.deepEqual(state.fingerprints, {});
+  assert.deepEqual(state.completedWork, []);
+  assert.deepEqual(state.remainingWork, []);
+  assert.deepEqual(state.evidencePaths, []);
+  assert.equal(state.blocker, null);
+  assert.equal(state.awaitingUser, false);
+  const staging = await context.authority.readSigned("staging/context.json");
+  assert.deepEqual(staging.payload.files, {});
+  const packageSnapshot = await context.authority.readSigned(
+    "packages/discovery.json",
+  );
+  assert.match(packageSnapshot.payload.snapshotDigest, /^[a-f0-9]{64}$/u);
+  const priorApproval = await context.authority.readSigned(
+    "approvals/context-refresh-fixture.json",
+  );
+  assert.equal(priorApproval.payload.status, "superseded");
+});
+
+test("a non-lease-holder cannot refresh active project context", async () => {
+  const item = await fixture("qaas-context-refresh-lease-");
+  const ownerSessionId = "context-refresh-owner";
+  const activated = await handleSessionEvent(
+    sessionEvent(ownerSessionId, "/qaas:onboard"),
+    { env: item.env },
+  );
+  const handle = sessionHandleFrom(activated);
+  await runWorkflowAuthority(
+    ["discover", "--session-handle", handle],
+    item.env,
+  );
+  const context = await runtimeContext(item.env);
+  const discovered = (
+    await context.authority.readSigned("state/current.json")
+  ).payload;
+  const reviewed = await commitTransition(
+    context.authority,
+    discovered,
+    "CONTEXT_REVIEW",
+    {
+      reason: "Synthetic active context owned by another session",
+      patch: {
+        approvedDigests: { context: sha256("owner-context-approval") },
+      },
+    },
+  );
+  const denied = await handleSessionEvent(
+    sessionEvent(
+      "context-refresh-non-owner",
+      "/qaas:onboard refresh without a lease takeover",
+    ),
+    { env: item.env },
+  );
+  assert.match(
+    denied.hookSpecificOutput.additionalContext,
+    /AskUserQuestion once/u,
+  );
+  const stored = (
+    await context.authority.readSigned("state/current.json")
+  ).payload;
+  assert.equal(stored.phase, "CONTEXT_REVIEW");
+  assert.equal(stored.sequence, reviewed.sequence);
+  assert.deepEqual(stored.approvedDigests, reviewed.approvedDigests);
+});
+
+test("onboarding refresh cannot clear a safety violation", async () => {
+  const item = await fixture("qaas-safety-refresh-");
+  const sessionId = "safety-refresh-session";
+  const activated = await handleSessionEvent(
+    sessionEvent(sessionId, "/qaas:onboard"),
+    { env: item.env },
+  );
+  const handle = sessionHandleFrom(activated);
+  await runWorkflowAuthority(
+    ["discover", "--session-handle", handle],
+    item.env,
+  );
+  const context = await runtimeContext(item.env);
+  const current = (
+    await context.authority.readSigned("state/current.json")
+  ).payload;
+  const violated = await commitTransition(
+    context.authority,
+    current,
+    "SAFETY_VIOLATION",
+    {
+      reason: "Synthetic safety violation before refresh",
+      patch: {
+        blocker: "Preserve the synthetic safety evidence",
+        nextLegalAction: "Resolve the safety violation explicitly",
+      },
+    },
+  );
+  const denied = await handleSessionEvent(
+    sessionEvent(sessionId, "/qaas:onboard ignore the safety boundary"),
+    { env: item.env },
+  );
+  assert.equal(denied.decision, "block");
+  assert.match(denied.reason, /cannot clear SAFETY_VIOLATION/u);
+  const stored = (
+    await context.authority.readSigned("state/current.json")
+  ).payload;
+  assert.equal(stored.phase, "SAFETY_VIOLATION");
+  assert.equal(stored.sequence, violated.sequence);
+});
+
 test("exact onboarding deterministically recovers BLOCKED and STALE state", async () => {
   const item = await fixture("qaas-recovery-");
   const sessionId = "recovery-session";
@@ -2714,6 +3031,834 @@ test("exact onboarding deterministically recovers BLOCKED and STALE state", asyn
   assert.deepEqual(state.approvedDigests, {});
   assert.deepEqual(state.fingerprints, {});
   assert.equal(state.blocker, null);
+});
+
+test("Stop blocks premature exit while signed work remains", async () => {
+  const item = await fixture("qaas-stop-premature-");
+  const sessionId = "stop-premature-session";
+  const activated = await handleSessionEvent(
+    sessionEvent(sessionId, "/qaas:onboard"),
+    { env: item.env },
+  );
+  const handle = sessionHandleFrom(activated);
+  await runWorkflowAuthority(
+    ["discover", "--session-handle", handle],
+    item.env,
+  );
+  const denied = await handleSessionEvent(stopEvent(sessionId), {
+    env: item.env,
+  });
+  assert.equal(denied.decision, "block");
+  assert.match(denied.reason, /Continue with the signed next legal action/u);
+  const context = await runtimeContext(item.env);
+  const checkpoint = await context.authority.readSigned(
+    `sessions/${sha256(sessionId)}/checkpoint.json`,
+  );
+  assert.equal(checkpoint.payload.eventName, "Stop");
+  assert.equal(checkpoint.payload.awaitingUser, false);
+});
+
+test("model checkpoints cannot assert awaitingUser or bypass Stop", async () => {
+  const item = await fixture("qaas-stop-awaiting-user-bypass-");
+  const sessionId = "stop-awaiting-user-bypass-session";
+  const activated = await handleSessionEvent(
+    sessionEvent(sessionId, "/qaas:onboard"),
+    { env: item.env },
+  );
+  const handle = sessionHandleFrom(activated);
+  await runWorkflowAuthority(
+    ["discover", "--session-handle", handle],
+    item.env,
+  );
+  await assert.rejects(
+    runWorkflowAuthority(
+      [
+        "checkpoint",
+        "--session-handle",
+        handle,
+        "--content-base64",
+        base64Json({
+          awaitingUser: true,
+          blocker: null,
+          nextLegalAction: "Wait despite unfinished work",
+        }),
+      ],
+      item.env,
+    ),
+    /unsupported fields/u,
+  );
+  const context = await runtimeContext(item.env);
+  let state = (
+    await context.authority.readSigned("state/current.json")
+  ).payload;
+  state = await commitCheckpoint(
+    context.authority,
+    state,
+    { awaitingUser: true },
+    { reason: "Synthetic self-asserted waiting flag bypass attempt" },
+  );
+  assert.equal(state.awaitingUser, true);
+  const denied = await handleSessionEvent(
+    stopEvent(sessionId, false, "Work is complete."),
+    { env: item.env },
+  );
+  assert.equal(denied.decision, "block");
+  state = (
+    await context.authority.readSigned("state/current.json")
+  ).payload;
+  assert.equal(state.awaitingUser, false);
+});
+
+test("Stop corroborates one focused final question and the next prompt clears waiting", async () => {
+  const item = await fixture("qaas-awaiting-user-response-");
+  const sessionId = "awaiting-user-response-session";
+  const activated = await handleSessionEvent(
+    sessionEvent(sessionId, "/qaas:onboard"),
+    { env: item.env },
+  );
+  const handle = sessionHandleFrom(activated);
+  await runWorkflowAuthority(
+    ["discover", "--session-handle", handle],
+    item.env,
+  );
+  await runWorkflowAuthority(
+    [
+      "checkpoint",
+      "--session-handle",
+      handle,
+      "--content-base64",
+      base64Json({
+        blocker: null,
+        nextLegalAction: "Process the answer to the focused project question",
+      }),
+    ],
+    item.env,
+  );
+  assert.deepEqual(
+    await handleSessionEvent(
+      stopEvent(
+        sessionId,
+        false,
+        "Which exact field identifies the correlated output message?",
+      ),
+      { env: item.env },
+    ),
+    {},
+  );
+  const context = await runtimeContext(item.env);
+  let state = (
+    await context.authority.readSigned("state/current.json")
+  ).payload;
+  assert.equal(state.awaitingUser, true);
+  const stopCheckpoint = await context.authority.readSigned(
+    `sessions/${sha256(sessionId)}/checkpoint.json`,
+  );
+  assert.equal(
+    stopCheckpoint.payload.stopCorroboration,
+    "single-focused-question",
+  );
+  const response = await handleSessionEvent(
+    sessionEvent(
+      sessionId,
+      "The reviewed correlation field is request_id.",
+    ),
+    { env: item.env },
+  );
+  assert.deepEqual(response, {});
+  state = (
+    await context.authority.readSigned("state/current.json")
+  ).payload;
+  assert.equal(state.awaitingUser, false);
+  assert.equal(
+    state.nextLegalAction,
+    "Process the answer to the focused project question",
+  );
+  const denied = await handleSessionEvent(stopEvent(sessionId), {
+    env: item.env,
+  });
+  assert.equal(denied.decision, "block");
+});
+
+test("Stop rejects malformed, empty, statement, and multiple-question messages", async () => {
+  const item = await fixture("qaas-stop-question-shape-");
+  const sessionId = "stop-question-shape-session";
+  const activated = await handleSessionEvent(
+    sessionEvent(sessionId, "/qaas:onboard"),
+    { env: item.env },
+  );
+  const handle = sessionHandleFrom(activated);
+  await runWorkflowAuthority(
+    ["discover", "--session-handle", handle],
+    item.env,
+  );
+  for (const lastAssistantMessage of [
+    undefined,
+    null,
+    [],
+    "",
+    "I am waiting for the user.",
+    "?",
+    "Which input should be used? Which output should be expected?",
+    "Which input should be used?\nThen I will stop.",
+    "```\nWhich input?\n```",
+  ]) {
+    const denied = await handleSessionEvent(
+      stopEvent(sessionId, false, lastAssistantMessage),
+      { env: item.env },
+    );
+    assert.equal(
+      denied.decision,
+      "block",
+      JSON.stringify(lastAssistantMessage),
+    );
+  }
+});
+
+test("Stop allows only documented nonterminal manual-command success phases", async () => {
+  const cases = [
+    {
+      expectedPhase: "PROJECT_READY",
+      path: ["CONTEXT_REVIEW", "PROJECT_READY"],
+    },
+    {
+      expectedPhase: "PLAN_APPROVED",
+      path: [
+        "CONTEXT_REVIEW",
+        "PROJECT_READY",
+        "TASK_DISCOVERY",
+        "PLAN_REVIEW",
+        "PLAN_APPROVED",
+      ],
+    },
+    {
+      expectedPhase: "IMPLEMENTED_NOT_RUN",
+      path: [
+        "CONTEXT_REVIEW",
+        "PROJECT_READY",
+        "TASK_DISCOVERY",
+        "PLAN_REVIEW",
+        "PLAN_APPROVED",
+        "IMPLEMENTING",
+        "BUILD_VERIFIED",
+        "TEMPLATE_VERIFIED",
+        "IMPLEMENTED_NOT_RUN",
+      ],
+    },
+  ];
+  for (const entry of cases) {
+    const item = await fixture(`qaas-stop-manual-${entry.expectedPhase}-`);
+    const sessionId = `stop-manual-${entry.expectedPhase}`;
+    const activated = await handleSessionEvent(
+      sessionEvent(sessionId, "/qaas:onboard"),
+      { env: item.env },
+    );
+    const handle = sessionHandleFrom(activated);
+    await runWorkflowAuthority(
+      ["discover", "--session-handle", handle],
+      item.env,
+    );
+    const context = await runtimeContext(item.env);
+    let state = (
+      await context.authority.readSigned("state/current.json")
+    ).payload;
+    for (const phase of entry.path) {
+      if (phase === "TASK_DISCOVERY") {
+        await handleSessionEvent(
+          {
+            hook_event_name: "UserPromptExpansion",
+            session_id: sessionId,
+            prompt: "/qaas:plan",
+            command_args: "for the current reviewed request",
+          },
+          { env: item.env },
+        );
+      }
+      if (phase === "IMPLEMENTING") {
+        await handleSessionEvent(
+          sessionEvent(
+            sessionId,
+            "/qaas:implement the exact approved plan",
+          ),
+          { env: item.env },
+        );
+      }
+      state = await commitTransition(context.authority, state, phase, {
+        reason: `Synthetic manual-command path to ${phase}`,
+        patch:
+          phase === "TASK_DISCOVERY"
+            ? { taskId: `manual-${entry.expectedPhase}` }
+            : {},
+      });
+    }
+    assert.deepEqual(
+      await handleSessionEvent(
+        stopEvent(sessionId, false, "The manual command completed."),
+        { env: item.env },
+      ),
+      {},
+    );
+    state = (
+      await context.authority.readSigned("state/current.json")
+    ).payload;
+    assert.equal(state.awaitingUser, true);
+    const checkpoint = await context.authority.readSigned(
+      `sessions/${sha256(sessionId)}/checkpoint.json`,
+    );
+    assert.equal(
+      checkpoint.payload.stopCorroboration,
+      "manual-command-success-phase",
+    );
+    const replay = await handleSessionEvent(
+      stopEvent(
+        sessionId,
+        false,
+        "The manual command completed.",
+      ),
+      { env: item.env },
+    );
+    assert.equal(replay.decision, "block");
+    state = (
+      await context.authority.readSigned("state/current.json")
+    ).payload;
+    assert.equal(state.awaitingUser, false);
+  }
+});
+
+test("manual Stop boundaries require the matching current command and invalidate on interruption", async () => {
+  const withoutCommand = await fixture("qaas-stop-manual-missing-command-");
+  const withoutCommandSession = "stop-manual-missing-command-session";
+  const withoutCommandActivation = await handleSessionEvent(
+    sessionEvent(withoutCommandSession, "/qaas:onboard"),
+    { env: withoutCommand.env },
+  );
+  const withoutCommandHandle = sessionHandleFrom(withoutCommandActivation);
+  await runWorkflowAuthority(
+    ["discover", "--session-handle", withoutCommandHandle],
+    withoutCommand.env,
+  );
+  const withoutCommandContext = await runtimeContext(withoutCommand.env);
+  let state = (
+    await withoutCommandContext.authority.readSigned("state/current.json")
+  ).payload;
+  for (const phase of [
+    "CONTEXT_REVIEW",
+    "PROJECT_READY",
+    "TASK_DISCOVERY",
+    "PLAN_REVIEW",
+    "PLAN_APPROVED",
+  ]) {
+    state = await commitTransition(
+      withoutCommandContext.authority,
+      state,
+      phase,
+      {
+        reason: `Synthetic missing-command path to ${phase}`,
+        patch:
+          phase === "TASK_DISCOVERY"
+            ? { taskId: "missing-plan-command" }
+            : {},
+      },
+    );
+  }
+  const missing = await handleSessionEvent(
+    stopEvent(
+      withoutCommandSession,
+      false,
+      "The planning command completed.",
+    ),
+    { env: withoutCommand.env },
+  );
+  assert.equal(missing.decision, "block");
+
+  const interrupted = await fixture("qaas-stop-manual-interrupted-");
+  const interruptedSession = "stop-manual-interrupted-session";
+  const interruptedActivation = await handleSessionEvent(
+    sessionEvent(interruptedSession, "/qaas:onboard"),
+    { env: interrupted.env },
+  );
+  const interruptedHandle = sessionHandleFrom(interruptedActivation);
+  await runWorkflowAuthority(
+    ["discover", "--session-handle", interruptedHandle],
+    interrupted.env,
+  );
+  const interruptedContext = await runtimeContext(interrupted.env);
+  state = (
+    await interruptedContext.authority.readSigned("state/current.json")
+  ).payload;
+  for (const phase of ["CONTEXT_REVIEW", "PROJECT_READY"]) {
+    state = await commitTransition(
+      interruptedContext.authority,
+      state,
+      phase,
+      { reason: `Synthetic interrupted-command path to ${phase}` },
+    );
+  }
+  await handleSessionEvent(
+    sessionEvent(interruptedSession, "/qaas:plan"),
+    { env: interrupted.env },
+  );
+  await handleSessionEvent(
+    sessionEvent(
+      interruptedSession,
+      "Continue the natural-language task without the planning command.",
+    ),
+    { env: interrupted.env },
+  );
+  state = (
+    await interruptedContext.authority.readSigned("state/current.json")
+  ).payload;
+  for (const phase of [
+    "TASK_DISCOVERY",
+    "PLAN_REVIEW",
+    "PLAN_APPROVED",
+  ]) {
+    state = await commitTransition(
+      interruptedContext.authority,
+      state,
+      phase,
+      {
+        reason: `Synthetic interrupted-command path to ${phase}`,
+        patch:
+          phase === "TASK_DISCOVERY"
+            ? { taskId: "interrupted-plan-command" }
+            : {},
+      },
+    );
+  }
+  const denied = await handleSessionEvent(
+    stopEvent(
+      interruptedSession,
+      false,
+      "The planning command completed.",
+    ),
+    { env: interrupted.env },
+  );
+  assert.equal(denied.decision, "block");
+  const boundary = await interruptedContext.authority.readSigned(
+    `sessions/${sha256(interruptedSession)}/manual-stop-boundary.json`,
+  );
+  assert.equal(boundary.payload.status, "invalidated");
+});
+
+test("another slash command cannot masquerade as a manual-boundary answer", async () => {
+  const item = await fixture("qaas-stop-manual-command-interruption-");
+  const sessionId = "stop-manual-command-interruption-session";
+  const activated = await handleSessionEvent(
+    sessionEvent(sessionId, "/qaas:onboard"),
+    { env: item.env },
+  );
+  const handle = sessionHandleFrom(activated);
+  await runWorkflowAuthority(
+    ["discover", "--session-handle", handle],
+    item.env,
+  );
+  const context = await runtimeContext(item.env);
+  let state = (
+    await context.authority.readSigned("state/current.json")
+  ).payload;
+  for (const phase of ["CONTEXT_REVIEW", "PROJECT_READY"]) {
+    state = await commitTransition(context.authority, state, phase, {
+      reason: `Synthetic command-interruption path to ${phase}`,
+    });
+  }
+
+  for (const interruptingPrompt of [
+    "/qaas:run",
+    "/qaas:diagnose the last failure",
+    "/qaas:doctor",
+    "/qaas:not-a-real-command",
+    "/QAAS:RUN",
+    "/compact",
+    "/other:command with reviewed arguments",
+  ]) {
+    await handleSessionEvent(
+      sessionEvent(sessionId, "/qaas:plan"),
+      { env: item.env },
+    );
+    assert.deepEqual(
+      await handleSessionEvent(
+        stopEvent(
+          sessionId,
+          false,
+          "Which exact output condition should the plan verify?",
+        ),
+        { env: item.env },
+      ),
+      {},
+    );
+    await handleSessionEvent(
+      sessionEvent(sessionId, interruptingPrompt),
+      { env: item.env },
+    );
+    const boundary = await context.authority.readSigned(
+      `sessions/${sha256(sessionId)}/manual-stop-boundary.json`,
+    );
+    assert.equal(
+      boundary.payload.status,
+      "invalidated",
+      interruptingPrompt,
+    );
+    assert.match(boundary.payload.invalidationReason, /interrupted/u);
+  }
+});
+
+test("same-session lease rotation invalidates manual continuation and consumption", async () => {
+  const item = await fixture("qaas-stop-manual-lease-rotation-");
+  const sessionId = "stop-manual-lease-rotation-session";
+  const activated = await handleSessionEvent(
+    sessionEvent(sessionId, "/qaas:onboard"),
+    { env: item.env },
+  );
+  const handle = sessionHandleFrom(activated);
+  await runWorkflowAuthority(
+    ["discover", "--session-handle", handle],
+    item.env,
+  );
+  const context = await runtimeContext(item.env);
+  let state = (
+    await context.authority.readSigned("state/current.json")
+  ).payload;
+  for (const phase of ["CONTEXT_REVIEW", "PROJECT_READY"]) {
+    state = await commitTransition(context.authority, state, phase, {
+      reason: `Synthetic lease-rotation path to ${phase}`,
+    });
+  }
+  const evidencePath = path.join(item.project, "reviewed-evidence.txt");
+  await writeFile(evidencePath, "bounded reviewed evidence\n", "utf8");
+
+  async function rotateLease(label) {
+    const prior = await context.authority.readSigned("lease/current.json");
+    const expired = {
+      ...prior.payload,
+      expiresAt: new Date(Date.now() - 60_000).toISOString(),
+      sequence: prior.payload.sequence + 1,
+    };
+    await context.authority.writeSigned("lease/current.json", expired, {
+      expectedSequence: prior.payload.sequence,
+    });
+    const preTool = await handlePreToolUse(
+      {
+        hook_event_name: "PreToolUse",
+        session_id: sessionId,
+        tool_name: "Read",
+        tool_use_id: `background-read-${label}`,
+        tool_input: { file_path: evidencePath },
+      },
+      { env: item.env },
+    );
+    assert.equal(preTool.hookSpecificOutput.permissionDecision, "allow");
+    const current = await context.authority.readSigned("lease/current.json");
+    assert.notEqual(current.payload.leaseId, prior.payload.leaseId);
+    return current.payload.leaseId;
+  }
+
+  await handleSessionEvent(
+    sessionEvent(sessionId, "/qaas:plan"),
+    { env: item.env },
+  );
+  await handleSessionEvent(
+    stopEvent(
+      sessionId,
+      false,
+      "Which exact field should the reviewed plan assert?",
+    ),
+    { env: item.env },
+  );
+  await rotateLease("continuation");
+  await handleSessionEvent(
+    sessionEvent(sessionId, "Assert the exact reviewed status field."),
+    { env: item.env },
+  );
+  let boundary = await context.authority.readSigned(
+    `sessions/${sha256(sessionId)}/manual-stop-boundary.json`,
+  );
+  assert.equal(boundary.payload.status, "invalidated");
+
+  await handleSessionEvent(
+    sessionEvent(sessionId, "/qaas:plan"),
+    { env: item.env },
+  );
+  await handleSessionEvent(
+    stopEvent(
+      sessionId,
+      false,
+      "Which exact expected value should the reviewed plan use?",
+    ),
+    { env: item.env },
+  );
+  await rotateLease("consumption");
+  state = (
+    await context.authority.readSigned("state/current.json")
+  ).payload;
+  for (const phase of ["TASK_DISCOVERY", "PLAN_REVIEW", "PLAN_APPROVED"]) {
+    state = await commitTransition(context.authority, state, phase, {
+      reason: `Synthetic rotated-lease path to ${phase}`,
+      patch:
+        phase === "TASK_DISCOVERY"
+          ? { taskId: "rotated-lease-plan-command" }
+          : {},
+    });
+  }
+  const denied = await handleSessionEvent(
+    stopEvent(sessionId, false, "The planning command completed."),
+    { env: item.env },
+  );
+  assert.equal(denied.decision, "block");
+  boundary = await context.authority.readSigned(
+    `sessions/${sha256(sessionId)}/manual-stop-boundary.json`,
+  );
+  assert.notEqual(boundary.payload.status, "consumed");
+});
+
+test("a manual boundary survives only signed multi-turn question continuations", async () => {
+  const item = await fixture("qaas-stop-manual-multiturn-");
+  const sessionId = "stop-manual-multiturn-session";
+  const activated = await handleSessionEvent(
+    sessionEvent(sessionId, "/qaas:onboard"),
+    { env: item.env },
+  );
+  const handle = sessionHandleFrom(activated);
+  await runWorkflowAuthority(
+    ["discover", "--session-handle", handle],
+    item.env,
+  );
+  const context = await runtimeContext(item.env);
+  let state = (
+    await context.authority.readSigned("state/current.json")
+  ).payload;
+  for (const phase of ["CONTEXT_REVIEW", "PROJECT_READY"]) {
+    state = await commitTransition(context.authority, state, phase, {
+      reason: `Synthetic multi-turn command path to ${phase}`,
+    });
+  }
+  await handleSessionEvent(
+    sessionEvent(sessionId, "/qaas:plan"),
+    { env: item.env },
+  );
+  assert.deepEqual(
+    await handleSessionEvent(
+      stopEvent(
+        sessionId,
+        false,
+        "Which exact output field should the plan assert?",
+      ),
+      { env: item.env },
+    ),
+    {},
+  );
+  await handleSessionEvent(
+    sessionEvent(sessionId, "Assert the reviewed result_code field."),
+    { env: item.env },
+  );
+  assert.deepEqual(
+    await handleSessionEvent(
+      stopEvent(
+        sessionId,
+        false,
+        "Which exact expected value should result_code contain?",
+      ),
+      { env: item.env },
+    ),
+    {},
+  );
+  await handleSessionEvent(
+    sessionEvent(sessionId, "The exact expected value is ACCEPTED."),
+    { env: item.env },
+  );
+  let boundary = await context.authority.readSigned(
+    `sessions/${sha256(sessionId)}/manual-stop-boundary.json`,
+  );
+  assert.equal(boundary.payload.status, "pending");
+  assert.equal(boundary.payload.continuationCount, 2);
+  state = (
+    await context.authority.readSigned("state/current.json")
+  ).payload;
+  for (const phase of [
+    "TASK_DISCOVERY",
+    "PLAN_REVIEW",
+    "PLAN_APPROVED",
+  ]) {
+    state = await commitTransition(context.authority, state, phase, {
+      reason: `Synthetic multi-turn command path to ${phase}`,
+      patch:
+        phase === "TASK_DISCOVERY"
+          ? { taskId: "multi-turn-plan-command" }
+          : {},
+    });
+  }
+  assert.deepEqual(
+    await handleSessionEvent(
+      stopEvent(sessionId, false, "The planning command completed."),
+      { env: item.env },
+    ),
+    {},
+  );
+  boundary = await context.authority.readSigned(
+    `sessions/${sha256(sessionId)}/manual-stop-boundary.json`,
+  );
+  assert.equal(boundary.payload.status, "consumed");
+  assert.equal(boundary.payload.continuationCount, 2);
+  const replay = await handleSessionEvent(
+    stopEvent(sessionId, false, "The planning command completed."),
+    { env: item.env },
+  );
+  assert.equal(replay.decision, "block");
+});
+
+test("Stop allows only real BLOCKED, SAFETY_VIOLATION, and VERIFIED terminal states", async () => {
+  const blockedItem = await fixture("qaas-stop-blocker-");
+  const blockedSessionId = "stop-blocker-session";
+  const blockedActivation = await handleSessionEvent(
+    sessionEvent(blockedSessionId, "/qaas:onboard"),
+    { env: blockedItem.env },
+  );
+  const blockedHandle = sessionHandleFrom(blockedActivation);
+  await runWorkflowAuthority(
+    ["discover", "--session-handle", blockedHandle],
+    blockedItem.env,
+  );
+  await runWorkflowAuthority(
+    [
+      "checkpoint",
+      "--session-handle",
+      blockedHandle,
+      "--content-base64",
+      base64Json({
+        blocker: "Required project evidence is unavailable",
+        nextLegalAction: "Report the genuine evidence blocker",
+      }),
+    ],
+    blockedItem.env,
+  );
+  const prematureBlockedStop = await handleSessionEvent(
+    stopEvent(blockedSessionId),
+    { env: blockedItem.env },
+  );
+  assert.equal(prematureBlockedStop.decision, "block");
+  const blockedContext = await runtimeContext(blockedItem.env);
+  const blockedState = (
+    await blockedContext.authority.readSigned("state/current.json")
+  ).payload;
+  await commitTransition(
+    blockedContext.authority,
+    blockedState,
+    "BLOCKED",
+    {
+      reason: "No safe evidence-producing action remains",
+      patch: {
+        blocker: "Required project evidence is unavailable",
+        nextLegalAction: "Report the genuine evidence blocker",
+      },
+    },
+  );
+  assert.deepEqual(
+    await handleSessionEvent(stopEvent(blockedSessionId), {
+      env: blockedItem.env,
+    }),
+    {},
+  );
+
+  const safetyItem = await fixture("qaas-stop-safety-");
+  const safetySessionId = "stop-safety-session";
+  const safetyActivation = await handleSessionEvent(
+    sessionEvent(safetySessionId, "/qaas:onboard"),
+    { env: safetyItem.env },
+  );
+  const safetyHandle = sessionHandleFrom(safetyActivation);
+  await runWorkflowAuthority(
+    ["discover", "--session-handle", safetyHandle],
+    safetyItem.env,
+  );
+  const safetyContext = await runtimeContext(safetyItem.env);
+  const safetyState = (
+    await safetyContext.authority.readSigned("state/current.json")
+  ).payload;
+  await commitTransition(
+    safetyContext.authority,
+    safetyState,
+    "SAFETY_VIOLATION",
+    {
+      reason: "Synthetic terminal safety violation",
+      patch: {
+        blocker: "Preserve the synthetic safety evidence",
+        nextLegalAction: "Report the terminal safety violation",
+      },
+    },
+  );
+  assert.deepEqual(
+    await handleSessionEvent(stopEvent(safetySessionId), {
+      env: safetyItem.env,
+    }),
+    {},
+  );
+
+  const verifiedItem = await fixture("qaas-stop-verified-");
+  const verifiedSessionId = "stop-verified-session";
+  const verifiedActivation = await handleSessionEvent(
+    sessionEvent(verifiedSessionId, "/qaas:onboard"),
+    { env: verifiedItem.env },
+  );
+  const verifiedHandle = sessionHandleFrom(verifiedActivation);
+  await runWorkflowAuthority(
+    ["discover", "--session-handle", verifiedHandle],
+    verifiedItem.env,
+  );
+  const verifiedContext = await runtimeContext(verifiedItem.env);
+  let verifiedState = (
+    await verifiedContext.authority.readSigned("state/current.json")
+  ).payload;
+  for (const phase of [
+    "CONTEXT_REVIEW",
+    "PROJECT_READY",
+    "TASK_DISCOVERY",
+    "PLAN_REVIEW",
+    "PLAN_APPROVED",
+    "IMPLEMENTING",
+    "BUILD_VERIFIED",
+    "TEMPLATE_VERIFIED",
+    "IMPLEMENTED_NOT_RUN",
+    "EXECUTION_REVIEW",
+    "EXECUTION_APPROVED",
+    "EXECUTING",
+    "VERIFIED",
+  ]) {
+    verifiedState = await commitTransition(
+      verifiedContext.authority,
+      verifiedState,
+      phase,
+      {
+        reason: `Synthetic terminal-state path to ${phase}`,
+        patch:
+          phase === "TASK_DISCOVERY"
+            ? { taskId: "verified-stop-task" }
+            : {},
+      },
+    );
+  }
+  assert.deepEqual(
+    await handleSessionEvent(stopEvent(verifiedSessionId), {
+      env: verifiedItem.env,
+    }),
+    {},
+  );
+});
+
+test("Stop recursion guard allows the follow-up Stop invocation", async () => {
+  const item = await fixture("qaas-stop-recursion-");
+  const sessionId = "stop-recursion-session";
+  const activated = await handleSessionEvent(
+    sessionEvent(sessionId, "/qaas:onboard"),
+    { env: item.env },
+  );
+  const handle = sessionHandleFrom(activated);
+  await runWorkflowAuthority(
+    ["discover", "--session-handle", handle],
+    item.env,
+  );
+  assert.deepEqual(
+    await handleSessionEvent(stopEvent(sessionId, true), { env: item.env }),
+    {},
+  );
 });
 
 test("bounded signed checkpoints survive compaction as a resumable projection", async () => {
@@ -2809,7 +3954,7 @@ test(
       "cache",
       "qaas-plugin",
       "qaas",
-      "0.2.0",
+      "0.3.0",
     );
     await mkdir(path.dirname(installedPluginRoot), { recursive: true });
     await cp(pluginRoot, installedPluginRoot, { recursive: true });
@@ -2844,7 +3989,7 @@ test(
     assert.equal(validation.sourceRepositoryChecksApplied, false);
     assert.equal(validation.repositoryRoot, null);
     assert.equal(validation.pluginRoot, installedPluginRoot);
-    assert.equal(validation.version, "0.2.0");
+    assert.equal(validation.version, "0.3.0");
 
     const projectRoot = path.join(root, "project");
     await mkdir(projectRoot);
@@ -3028,6 +4173,50 @@ test("hook launcher maps every launcher and child failure to exit 2", async () =
     );
     assert.equal(result.signal, null, scenario.label);
   }
+});
+
+test("lifecycle handler failures make the hook launcher exit 2", async () => {
+  const item = await fixture("qaas-lifecycle-fail-");
+  const sessionId = "lifecycle-failure-session";
+  await handleSessionEvent(
+    sessionEvent(sessionId, "/qaas:onboard"),
+    { env: item.env },
+  );
+  const context = await runtimeContext(item.env);
+  const statePath = path.join(
+    context.authority.root,
+    "state",
+    "current.json",
+  );
+  const corruptState = JSON.parse(await readFile(statePath, "utf8"));
+  corruptState.signature = "0".repeat(64);
+  await writeFile(
+    statePath,
+    `${JSON.stringify(corruptState, null, 2)}\n`,
+    "utf8",
+  );
+  const launcher = path.join(pluginRoot, "scripts", "hook-launcher.mjs");
+  const sessionState = path.join(pluginRoot, "scripts", "session-state.mjs");
+  const result = await spawnWithInputObserved(
+    process.execPath,
+    [launcher, sessionState],
+    `${JSON.stringify(
+      stopEvent(
+        sessionId,
+        false,
+        "The unfinished work is complete.",
+      ),
+    )}\n`,
+    {
+      cwd: item.project,
+      env: item.env,
+    },
+  );
+  assert.equal(result.exitCode, 2, result.stderr || result.stdout);
+  assert.equal(result.signal, null);
+  assert.equal(result.stdout, "");
+  assert.match(result.stderr, /lifecycle hook failed closed/u);
+  assert.match(result.stderr, /Node hook process failed closed/u);
 });
 
 test("doctor denies project-local Node PATH shadows", async () => {

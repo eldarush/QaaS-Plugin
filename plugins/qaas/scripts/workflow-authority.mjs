@@ -70,7 +70,7 @@ import {
 import { resolveSourceReadRequest } from "./lib/source-read-request.mjs";
 import { discoverProgram } from "./lib/process-runner.mjs";
 
-const PLUGIN_VERSION = "0.2.0";
+const PLUGIN_VERSION = "0.3.0";
 const MAX_ARTIFACT_BYTES = 1024 * 1024;
 const MAX_REVIEW_BYTES = 64 * 1024;
 const MAX_HUMAN_REVIEW_BYTES = 24 * 1024;
@@ -401,6 +401,7 @@ async function createResumeProjection(context, active) {
       .slice(-MAX_RESUME_ITEMS)
       .map((entry) => boundedText(entry, 240)),
     blocker: boundedText(live.blocker, 512),
+    awaitingUser: live.awaitingUser === true,
     nextLegalAction: boundedText(live.nextLegalAction, 512),
     recentEvidenceHandles: evidence.handles,
     recentEvidenceHandlesTruncated: evidence.truncated,
@@ -487,10 +488,11 @@ async function checkpointProgress(context, active, args) {
   if (
     blocker !== null &&
     (typeof blocker !== "string" ||
+      blocker.trim() === "" ||
       blocker.length > 512 ||
       blocker.includes("\0"))
   ) {
-    throw new Error("blocker must be null or at most 512 safe characters");
+    throw new Error("blocker must be null or contain 1-512 safe characters");
   }
   const nextLegalAction =
     document.nextLegalAction ?? active.state.nextLegalAction;
@@ -2539,6 +2541,7 @@ async function status(context) {
     projectFingerprintDigest: fingerprint?.digest ?? null,
     authorityCapabilities: AUTHORITY_CAPABILITIES,
     hooksAttested: state.payload.hooksAttested,
+    awaitingUser: state.payload.awaitingUser === true,
     eventChainValid: chain.valid,
     nextLegalAction: state.payload.nextLegalAction,
     resumeRequired: true,

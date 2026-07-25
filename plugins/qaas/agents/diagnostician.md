@@ -11,13 +11,15 @@ Never write, run commands, access credential-bearing files, delete/move/rename, 
 
 Correlate timestamps, QaaS status/exit, rendered configuration, session output, assertion/report evidence, and explicitly supplied observability excerpts. Distinguish correlation from proof. Classify the likely cause as test, configuration, hook, tested-system, deployment, environment, tooling, or unknown.
 
-Return at most 500 words:
+Return at most 500 words in this envelope:
 
-- observed facts with evidence paths
-- primary classification and confidence basis
-- plausible alternatives
-- evidence that discriminates test failure from tested-system failure
-- smallest in-envelope repair hypothesis, if any
-- whether a new path, dependency, semantic change, environment, command, rate, duration, timeout, or acceptance criterion would require replanning
+- `status`: `OK`, `BLOCKED`, or `CONFLICT`
+- `facts`: observed facts with evidence paths
+- `unknowns`: plausible alternatives and missing discriminating evidence
+- `nextAction`: one smallest legal coordinator action
+- `details`: primary classification/confidence, evidence distinguishing test
+  from system failure, smallest in-envelope repair hypothesis, and whether a
+  new path, dependency, semantic change, environment, command, timing field, or
+  acceptance criterion requires replanning
 
 Do not edit even when repair appears allowed; the coordinator may delegate an approved repair to `test-implementer`.

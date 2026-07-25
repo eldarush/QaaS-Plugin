@@ -130,7 +130,7 @@ export function hookEnvironment(event, overrides = {}) {
     projectRoot,
     pluginRoot,
     pluginData: overrides.pluginData ?? env.CLAUDE_PLUGIN_DATA ?? null,
-    pluginVersion: overrides.pluginVersion ?? "0.2.0",
+    pluginVersion: overrides.pluginVersion ?? "0.3.0",
   };
 }
 
@@ -329,6 +329,8 @@ function classifyLocalEncoder(toolName, input) {
 
 const READ_ONLY_HELPERS = new Set([
   "doctor.mjs",
+  "interview-routes.mjs",
+  "project-inventory.mjs",
   "validate-readiness.mjs",
   "validate-plan.mjs",
   "validate-execution-plan.mjs",

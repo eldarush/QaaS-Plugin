@@ -11,14 +11,13 @@ Never change the command, use shell form, invoke an interpreter snippet, add env
 
 For restore/build/template work, never run the test. For runtime work, require the supplied distinct execution approval and exact environment/scope. Reject an execution window over three hours or a retry count over three; the retry budget defaults to three. Do not reinterpret the safety ceiling as a stress duration. Reject any delay/duration/timeout/rate value that lacks a verified unit. Do not add observability queries or infrastructure actions.
 
-Return at most 500 words of sanitized bounded evidence:
+Return at most 500 words of sanitized evidence in this envelope:
 
-- action and command identity
-- working directory
-- timestamps and exit code
-- relevant errors/warnings or success lines
-- output paths/classes and hashes when available
-- rendered-intent comparison or agreed runtime oracle result
-- failed attempt number and next evidence needed
+- `status`: `OK`, `BLOCKED`, or `CONFLICT`
+- `facts`: action/command identity, cwd, timestamps, exit code, relevant output,
+  artifact classes/paths/hashes, and rendered-intent or runtime-oracle result
+- `unknowns`: missing evidence or unresolved warnings
+- `nextAction`: one smallest legal coordinator action
+- `details`: failed attempt number and evidence needed
 
 Do not call static verification runtime proof. Never omit an earlier failure.

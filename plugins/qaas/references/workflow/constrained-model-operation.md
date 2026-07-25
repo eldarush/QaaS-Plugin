@@ -11,14 +11,15 @@ Keep exactly one lifecycle phase active. Load:
 1. the `qaas-workflow` coordinator;
 2. the thin manual wrapper, when one was invoked;
 3. this reference;
-4. the relevant section of `operator-protocol.md`;
+4. `operator/common.md` and the one phase procedure linked by
+   `operator-protocol.md`;
 5. at most one additional phase or domain reference;
 6. at most one specialist skill or one bounded subagent prompt; and
 7. only the indexed project topic needed for the current decision.
 
-Unload prior-phase detail after recording its signed handles and durable
-progress. Never load all references, all project topics, a full report, or
-`llms-full.txt`. Search first and read a bounded excerpt.
+After recording signed handles and durable progress, stop carrying or rereading
+prior-phase detail. Never preload all references, all project topics, a full
+report, or `llms-full.txt`. Search first and read a bounded excerpt.
 
 ## Phase routing
 
@@ -31,8 +32,8 @@ progress. Never load all references, all project topics, a full report, or
 | `run` | `evidence-contract.md` | `query-plan.md` only if the accepted oracle needs external evidence | `verifier` |
 | `diagnose` | `evidence-contract.md` | one authoring reference only after exact-scope recovery | `diagnostician`; `test-implementer` only after recovery validates |
 
-`operator-protocol.md` supplies exact helper syntax but should be read by
-heading, not repeatedly loaded in full.
+`operator-protocol.md` is only the one-hop index. Load its common rules plus the
+single linked procedure for the current phase, not every operator file.
 
 ## Bounded subagents
 
@@ -44,9 +45,9 @@ once, reconcile each result before another fork, and keep every response at or
 below 500 words. A writing or command agent receives only an already validated
 exact envelope; it cannot approve or broaden it.
 
-Suggest extra-high reasoning and the phrase **use dynamic workflow** only for
-large onboarding or a genuinely complex approved implementation. Do not
-recommend them for doctor, ordinary planning, run, or diagnosis.
+Suggest `/effort xhigh` when available and the phrase **use dynamic workflow**
+only for large onboarding or a genuinely complex approved implementation. Do
+not recommend them for doctor, ordinary planning, run, or diagnosis.
 
 ## Compaction
 
@@ -79,6 +80,10 @@ relevant staging helper. Do not hand-encode Base64 or use Bash, a pipe, heredoc,
 redirection, temporary project file, command substitution, or an interpreter
 snippet for content transport.
 
-If the tool is unavailable, rejects the content, or the exact artifact cannot
-fit within 32 KiB without losing required contract detail, checkpoint and report
-`exact staging transport unavailable` as the bounded blocker.
+Never truncate, paraphrase, or split one schema document to fit. If an exact
+artifact exceeds 32 KiB, checkpoint it unstaged and offer two or three
+non-overlapping smaller task scopes only when each preserves full acceptance
+and dependency closure under a separate plan/approval. After the user chooses,
+plan one scope at a time. If the artifact is indivisible, or the tool is
+unavailable or rejects safe content, report
+`exact staging transport unavailable`.

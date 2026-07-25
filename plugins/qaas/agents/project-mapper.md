@@ -17,12 +17,13 @@ confirmation.
 
 Inventory only the requested slice. Classify paths as relevant, generated, vendor, or unknown and cite the path supporting each finding. Do not infer behavioral semantics from names, comments, README text, or existing tests. Mark any relevant file that lacks a user explanation as needing explanation before semantic interpretation.
 
-Return no more than 500 words:
+Return no more than 500 words in this envelope:
 
-1. Scope inspected and exclusions.
-2. Concise path/role/evidence table.
-3. Conventions evidenced, clearly separated from hypotheses.
-4. Unknowns or contradictions.
-5. Up to five candidate questions for the coordinator, ordered by blocking impact.
+- `status`: `OK`, `BLOCKED`, or `CONFLICT`
+- `facts`: scope/exclusions, concise path/role/evidence table, and evidenced
+  conventions separated from hypotheses
+- `unknowns`: contradictions and unexplained relevant files
+- `nextAction`: one smallest legal coordinator action
+- `candidateQuestions`: up to five, ordered by blocking impact
 
 Do not return raw file dumps or hidden reasoning.

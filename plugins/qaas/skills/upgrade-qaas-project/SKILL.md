@@ -1,5 +1,5 @@
 ---
-description: Plan and implement a proven compatible QaaS test-project upgrade without hard-coded versions.
+description: Internal upgrade specialist used only when qaas-workflow delegates an approved, evidence-backed QaaS test-project and .NET/package migration.
 user-invocable: false
 ---
 

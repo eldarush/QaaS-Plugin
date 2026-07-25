@@ -1,6 +1,6 @@
 # Target acceptance and owner handoff
 
-The public `v0.2.0` release is a Codex-proxy preview. Complete this checklist in
+The public `v0.3.0` release is a Codex-proxy preview. Complete this checklist in
 the actual air-gapped environment before declaring the plugin generally
 available.
 
@@ -119,8 +119,8 @@ secret. No test should rely on the agent cleaning up afterward.
 
 ## Weak-model and compaction checks
 
-- [ ] Extra-high effort and “use dynamic workflow” are recommended during large
-      onboarding/implementation.
+- [ ] `/effort xhigh` (when supported) and “use dynamic workflow” are
+      recommended during large onboarding/implementation.
 - [ ] Mapping work is partitioned into bounded forked subagents.
 - [ ] A subagent cannot approve or write outside inherited scope.
 - [ ] After deliberate context compaction, the coordinator resumes from durable
