@@ -32,15 +32,20 @@ behavior, contracts, QaaS constructs, and configuration meaning cannot be
 resolved this way.
 
 Read the signed active authority projection's
-`authorityCapabilities.writeContentBinding`. It is `false` in this release, so
-skip target-byte drafting and write-digest commands. Only if a future active
-authority reports `true`, finish these steps before approval:
+`authorityCapabilities.writeContentBinding`; require `true` or stop. Finish
+these steps before approval:
 
-- draft each planned file's exact complete target bytes without writing
-- compute SHA-256 over those exact bytes
-- include exactly one `write <add|modify> <path> sha256:<digest>` per write
-- `add` maps only to `paths.create`; `modify` maps only to `paths.modify`
-- reject missing, duplicate, or out-of-scope command paths
+- draft each planned file's exact complete target bytes without writing to the
+  project
+- preserve exact UTF-8 bytes, line endings, and any BOM; compute SHA-256 over
+  those exact bytes
+- put the digest in exactly one structured `changes[].targetSha256` for that
+  path; never use a fake command string as a binding
+- operation `create` maps only to `paths.create`; `modify` maps only to
+  `paths.modify`
+- reject missing, duplicate, stale, or out-of-scope path bindings
+- use `Write` only for create and one unique-match bounded `Edit` only for
+  modify; never use `NotebookEdit`
 
 In every structured semantic contract, preserve disclosed literal tokens and
 array order exactly. Never paraphrase, substitute synonyms, reorder, or
@@ -90,7 +95,8 @@ After editing:
 
 - account for every changed path and hunk
 - compare the diff with the approved envelope and unchanged paths
-- run only approved restore, build, and template checks
+- prepare only approved restore/build/template user-run handoffs; never launch
+  project or external code
 - inspect relevant errors and warnings
 - compare rendered configuration to accepted intent
 - retain failures and cite documentation/compatibility evidence

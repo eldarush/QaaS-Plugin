@@ -2,11 +2,13 @@
 
 No package version is current merely because it appears in this plugin, model memory, or an example.
 
-Current QaaS documentation uses the distribution's immutable
-`https://docs.qaas.online/` endpoint. QaaS Artifactory reads use the immutable
-`https://jfrog.com/artifactory/` endpoint. Neither endpoint has a runtime
-override or an onboarding prompt, and both are contacted only by an explicit
-focused query.
+Current QaaS documentation uses the attested source order: a proven WikiAll MCP
+pair, `QAAS_DOCS_HELM_URL`, `QAAS_DOCS_WIKIALL_URL`, then the public
+`https://docs.qaas.online/` fallback unless `QAAS_DOCS_AIRGAP=true`. A raw ZIM
+is identity evidence only and requires the approved OpenZIM/WikiAll MCP reader.
+QaaS Artifactory reads use the exact project-relevant organization base URL in
+one reviewed request; no generic public Artifactory endpoint exists. Every
+source is contacted only by an explicit focused query.
 
 NuGet source evidence comes from the target project's `NuGet.Config`,
 project/props/targets restore properties, lock data, and restore metadata. Do
@@ -24,10 +26,11 @@ For each package or target-framework change, record:
 - independently versioned dependencies
 - required entry-point, API, target-framework, or configuration migration
 - exact planned file and source changes
-- restore, build, and rendered-template verification
+- exact restore/build/template user-run handoffs and bounded imported evidence
 
 If latest compatible cannot be proven, ask for the specific missing project
-evidence. Never ask for a replacement docs or Artifactory URL, use
-general-internet discovery, or fetch or modify QaaS platform source.
+evidence. Documentation URL configuration uses only the canonical approved
+selectors; never improvise another source, ask for a replacement Artifactory
+URL, use general-internet discovery, or fetch or modify QaaS platform source.
 
 Upgrade approval must bind every source, package, path, command, generated-output class, risk, and unchanged path. Static verification does not authorize execution.

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/eldarush/QaaS-Plugin/schemas/approval-event.schema.json",
+  "$id": "https://github.com/TheSmokeTeam/QaaS-Plugin/schemas/approval-event.schema.json",
   "title": "QaaS signed approval event payload",
   "type": "object",
   "additionalProperties": false,
@@ -32,6 +32,7 @@
         "execution",
         "mutation",
         "capabilities",
+        "docs-mcp-probe",
         "source-checkout",
         "source-read",
         "readiness-fact",

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/eldarush/QaaS-Plugin/schemas/integration-capabilities.schema.json",
+  "$id": "https://github.com/TheSmokeTeam/QaaS-Plugin/schemas/integration-capabilities.schema.json",
   "title": "QaaS approved integration capability registry",
   "type": "object",
   "additionalProperties": false,
@@ -50,8 +50,26 @@
           "outputLimitBytes": { "type": "integer", "minimum": 1 },
           "outputLimitItems": { "type": "integer", "minimum": 1 },
           "probePassed": { "type": "boolean" },
+          "probeEvidenceDigest": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
           "userApproved": { "const": true }
-        }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "logicalOperation": {
+                  "enum": ["docs.search", "docs.read"]
+                },
+                "probePassed": { "const": true }
+              },
+              "required": ["logicalOperation", "probePassed"]
+            },
+            "then": { "required": ["probeEvidenceDigest"] }
+          }
+        ]
       }
     }
   }

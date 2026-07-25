@@ -29,7 +29,9 @@ Run only inside a fresh approved implementation or repair envelope.
 4. Return an explicit dependency closure for every selected base class, interface, and discovery API. Prove its compatible provider is installed; otherwise require the exact owning project/props/lock path, package change, and restore action in a fresh plan before implementation.
 5. Prefer a verified shared Common Hooks package. Add focused project-local or external hook code only when the approved plan requires it.
 6. Keep the implementation minimal, documented, convention-compliant, secret-free, and free of commented-out code.
-7. Build and verify actual discovery and configuration; compilation alone is insufficient.
+7. Prepare exact build/template user-run handoffs and inspect their bounded
+   imported discovery/configuration evidence; compilation alone is
+   insufficient. Never launch project or external code.
 8. Never delete, move, or rename.
 
 Return provenance, changed paths, contract/configuration mapping, discovery evidence, and remaining runtime validation.

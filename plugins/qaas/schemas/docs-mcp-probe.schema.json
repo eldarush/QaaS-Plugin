@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/TheSmokeTeam/QaaS-Plugin/schemas/docs-mcp-probe.schema.json",
+  "title": "QaaS bounded documentation MCP schema probe evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "projectId",
+    "server",
+    "transportDigest",
+    "protocolVersion",
+    "sessionMode",
+    "operations",
+    "bounds",
+    "probeDefinition",
+    "passed",
+    "toolsCallPerformed",
+    "probedAt",
+    "tools",
+    "digest"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.0" },
+    "projectId": { "type": "string", "minLength": 1 },
+    "server": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._-]{1,64}$"
+    },
+    "transportDigest": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "protocolVersion": { "const": "2025-03-26" },
+    "sessionMode": { "enum": ["stateful", "stateless"] },
+    "operations": {
+      "const": [
+        "initialize",
+        "notifications/initialized",
+        "tools/list"
+      ]
+    },
+    "bounds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "timeoutMs",
+        "outputLimitBytes",
+        "requestLimit",
+        "toolLimit",
+        "schemaLimitBytes"
+      ],
+      "properties": {
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 60000
+        },
+        "outputLimitBytes": {
+          "type": "integer",
+          "minimum": 1024,
+          "maximum": 262144
+        },
+        "requestLimit": { "const": 3 },
+        "toolLimit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 256
+        },
+        "schemaLimitBytes": {
+          "type": "integer",
+          "minimum": 256,
+          "maximum": 65536
+        }
+      }
+    },
+    "probeDefinition": {
+      "const": "one-attempt initialize plus tools/list schema discovery; transaction-wide timeout and aggregate response-byte bound; no tools/call"
+    },
+    "passed": { "const": true },
+    "toolsCallPerformed": { "const": false },
+    "probedAt": { "type": "string", "format": "date-time" },
+    "tools": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "inputSchema",
+          "schemaDigest",
+          "schemaBytes"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "inputSchema": { "type": "object" },
+          "schemaDigest": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "schemaBytes": {
+            "type": "integer",
+            "minimum": 2,
+            "maximum": 65536
+          }
+        }
+      }
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    }
+  }
+}

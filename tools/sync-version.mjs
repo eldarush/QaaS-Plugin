@@ -21,6 +21,16 @@ const marketplacePath = path.join(
   "marketplace.json",
 );
 const packagePath = path.join(repositoryRoot, "package.json");
+const docsSitePackagePath = path.join(
+  repositoryRoot,
+  "docs-site",
+  "package.json",
+);
+const docsSiteConfigurationPath = path.join(
+  repositoryRoot,
+  "docs-site",
+  "site.config.json",
+);
 const runtimeVersionTargets = [
   {
     path: path.join(
@@ -84,6 +94,37 @@ const runtimeVersionTargets = [
     replacement: () =>
       `clientInfo: { name: "qaas-docs-helper", version: "${desiredVersion}" },`,
   },
+  {
+    path: path.join(repositoryRoot, "docs-site", "Dockerfile"),
+    pattern:
+      /org\.opencontainers\.image\.version="\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?"/u,
+    replacement: () =>
+      `org.opencontainers.image.version="${desiredVersion}"`,
+  },
+  {
+    path: path.join(
+      repositoryRoot,
+      "deploy",
+      "kubernetes",
+      "qaas-plugin-docs.yaml",
+    ),
+    pattern:
+      /app\.kubernetes\.io\/version: "\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?"/u,
+    replacement: () =>
+      `app.kubernetes.io/version: "${desiredVersion}"`,
+  },
+  {
+    path: path.join(
+      repositoryRoot,
+      "deploy",
+      "kubernetes",
+      "qaas-plugin-docs.yaml",
+    ),
+    pattern:
+      /image: docker\.io\/thesmoketeam\/qaas-plugin-docs:\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?/u,
+    replacement: () =>
+      `image: docker.io/thesmoketeam/qaas-plugin-docs:${desiredVersion}`,
+  },
 ];
 const checkOnly = process.argv.includes("--check");
 
@@ -124,9 +165,16 @@ function synchronize(filePath, update) {
 
 function synchronizeRuntimeVersion({ path: filePath, pattern, replacement }) {
   const current = fs.readFileSync(filePath, "utf8");
-  if (!pattern.test(current)) {
+  const globalFlags = pattern.flags.includes("g")
+    ? pattern.flags
+    : `${pattern.flags}g`;
+  const matches = [...current.matchAll(new RegExp(pattern.source, globalFlags))];
+  if (matches.length !== 1) {
     throw new Error(
-      `Runtime version marker is missing in ${path.relative(repositoryRoot, filePath)}`,
+      `Expected exactly one runtime version marker in ${path.relative(
+        repositoryRoot,
+        filePath,
+      )}; found ${matches.length}.`,
     );
   }
   const desired = current.replace(pattern, replacement);
@@ -145,15 +193,25 @@ synchronize(pluginManifestPath, (manifest) => {
 synchronize(marketplacePath, (marketplace) => {
   marketplace.metadata ??= {};
   marketplace.metadata.version = desiredVersion;
-  for (const plugin of marketplace.plugins ?? []) {
-    if (plugin.name === "qaas") {
-      plugin.version = desiredVersion;
-    }
+  const qaasPlugins = (marketplace.plugins ?? []).filter(
+    (plugin) => plugin.name === "qaas",
+  );
+  if (qaasPlugins.length !== 1) {
+    throw new Error(
+      `Marketplace must contain exactly one qaas plugin; found ${qaasPlugins.length}.`,
+    );
   }
+  qaasPlugins[0].version = desiredVersion;
 });
 
 synchronize(packagePath, (packageDocument) => {
   packageDocument.version = desiredVersion;
+});
+synchronize(docsSitePackagePath, (packageDocument) => {
+  packageDocument.version = desiredVersion;
+});
+synchronize(docsSiteConfigurationPath, (configuration) => {
+  configuration.version = desiredVersion;
 });
 for (const target of runtimeVersionTargets) {
   synchronizeRuntimeVersion(target);

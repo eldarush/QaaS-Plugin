@@ -22,7 +22,10 @@ Route through onboarding and planning first. Never upgrade QaaS platform source.
 - Resolve independently versioned packages explicitly and identify documented target-framework, entry-point, API, or configuration migrations.
 - Plan every package/source/path change, exact restore/build/template commands, generated outputs, risks, and unchanged paths. Require approval of the canonical plan.
 - During implementation, change only approved paths and reuse project conventions. An obsolete reference may be removed inside an approved file; files are never deleted, moved, or renamed.
-- Restore, build, and render the template. Repair only documented incompatibilities inside the approved envelope. Do not run tests without separate execution approval.
+- Obtain exact deterministic restore/build/template handoffs for the user to
+  run, then import bounded evidence. The plugin never launches these processes.
+  Repair only documented incompatibilities inside the approved envelope.
+  Prepare a test handoff only after separate execution approval.
 
 Do not ask for a docs URL, Artifactory URL, global GitLab URL, or global NuGet
 feed. When project metadata contains no usable package source or several

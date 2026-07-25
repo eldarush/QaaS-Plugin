@@ -1,0 +1,460 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Controlled Codex proxy — documentation captures</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family:
+          Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI",
+          sans-serif;
+        background: #07110f;
+        color: #f4f8f7;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        padding: 48px;
+        background:
+          radial-gradient(circle at 10% 0%, #153e35 0, transparent 28rem),
+          #07110f;
+      }
+
+      main {
+        display: grid;
+        gap: 48px;
+        justify-content: center;
+      }
+
+      .capture-panel {
+        position: relative;
+        width: 1440px;
+        height: 810px;
+        overflow: hidden;
+        border: 1px solid #31534b;
+        border-radius: 28px;
+        background:
+          linear-gradient(140deg, rgb(18 39 34 / 96%), rgb(7 17 15 / 99%)),
+          #07110f;
+        box-shadow: 0 24px 80px rgb(0 0 0 / 42%);
+      }
+
+      .capture-panel::after {
+        position: absolute;
+        right: -140px;
+        bottom: -220px;
+        width: 540px;
+        height: 540px;
+        border-radius: 50%;
+        background: rgb(56 189 152 / 8%);
+        content: "";
+        pointer-events: none;
+      }
+
+      html[data-capture="workflow"] #evidence-capture,
+      html[data-capture="evidence"] #workflow-capture {
+        display: none;
+      }
+
+      .panel-inner {
+        position: relative;
+        z-index: 1;
+        display: grid;
+        grid-template-rows: auto 1fr auto;
+        height: 100%;
+        padding: 52px 58px 42px;
+      }
+
+      .eyebrow,
+      .label,
+      .footer,
+      .status {
+        font-size: 15px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .eyebrow {
+        color: #6ee7bf;
+      }
+
+      h1 {
+        max-width: 970px;
+        margin: 12px 0 0;
+        font-size: 42px;
+        line-height: 1.08;
+        letter-spacing: -0.035em;
+      }
+
+      .header-row {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 32px;
+      }
+
+      .pill {
+        flex: none;
+        padding: 10px 15px;
+        border: 1px solid #35685b;
+        border-radius: 999px;
+        background: #102b25;
+        color: #a7f3d0;
+        font-size: 14px;
+        font-weight: 700;
+      }
+
+      .conversation {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 18px 30px;
+        align-content: center;
+        padding: 26px 0 20px;
+      }
+
+      .message {
+        min-height: 104px;
+        padding: 18px 21px;
+        border: 1px solid #2b4c44;
+        border-radius: 18px;
+        background: rgb(10 28 24 / 88%);
+      }
+
+      .message.operator {
+        border-color: #665f4c;
+        background: rgb(44 39 27 / 72%);
+      }
+
+      .message.approval {
+        border-color: #2e826b;
+        background: rgb(13 55 45 / 78%);
+      }
+
+      .label {
+        margin-bottom: 8px;
+        color: #80d9bd;
+      }
+
+      .operator .label {
+        color: #f2cd75;
+      }
+
+      .message p,
+      .result-card p {
+        margin: 0;
+        color: #e6eeeb;
+        font-size: 18px;
+        line-height: 1.42;
+      }
+
+      .compact-qa {
+        display: grid;
+        gap: 8px;
+      }
+
+      .compact-qa p {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 14px;
+        align-items: baseline;
+      }
+
+      .answer {
+        color: #f2cd75;
+        font-weight: 800;
+      }
+
+      .footer {
+        display: flex;
+        justify-content: space-between;
+        border-top: 1px solid #29463f;
+        padding-top: 18px;
+        color: #91aaa3;
+      }
+
+      .evidence-grid {
+        display: grid;
+        grid-template-columns: 0.93fr 1.07fr;
+        gap: 26px;
+        align-items: stretch;
+        padding: 30px 0 24px;
+      }
+
+      .result-card,
+      pre {
+        margin: 0;
+        border: 1px solid #2b4c44;
+        border-radius: 20px;
+        background: rgb(8 24 20 / 92%);
+      }
+
+      .result-card {
+        display: grid;
+        align-content: start;
+        gap: 20px;
+        padding: 25px 26px;
+      }
+
+      .status-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+
+      .status {
+        padding: 8px 11px;
+        border-radius: 10px;
+        background: #14392f;
+        color: #78e3bd;
+        letter-spacing: 0.035em;
+      }
+
+      .status.neutral {
+        background: #28302f;
+        color: #d3ddda;
+      }
+
+      .file-list {
+        display: grid;
+        gap: 12px;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .file-list li {
+        display: grid;
+        grid-template-columns: 26px 1fr;
+        gap: 10px;
+        align-items: center;
+        color: #d9e6e2;
+        font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+        font-size: 15px;
+      }
+
+      .file-list li::before {
+        display: grid;
+        width: 24px;
+        height: 24px;
+        place-items: center;
+        border-radius: 50%;
+        background: #175b48;
+        color: #c8f8e5;
+        content: "+";
+        font-family: inherit;
+        font-weight: 800;
+      }
+
+      .command {
+        padding: 15px 17px;
+        border-radius: 14px;
+        background: #071712;
+        color: #a7f3d0;
+        font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+        font-size: 15px;
+        line-height: 1.4;
+      }
+
+      .boundary {
+        padding: 14px 16px;
+        border-left: 3px solid #d1a94e;
+        border-radius: 0 12px 12px 0;
+        background: rgb(74 57 22 / 32%);
+        color: #f0dfb5;
+        font-size: 15px;
+        line-height: 1.42;
+      }
+
+      pre {
+        display: grid;
+        align-content: center;
+        padding: 28px 30px;
+        color: #d7e6e1;
+        font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+        font-size: 17px;
+        line-height: 1.55;
+        white-space: pre-wrap;
+      }
+
+      .key {
+        color: #81e6c0;
+      }
+
+      .string {
+        color: #f2cd75;
+      }
+
+      .boolean {
+        color: #f69d8f;
+      }
+
+      @media (max-width: 1520px) {
+        body {
+          padding: 24px;
+        }
+
+        .capture-panel {
+          width: min(1440px, calc(100vw - 48px));
+          height: auto;
+          aspect-ratio: 16 / 9;
+        }
+
+        .panel-inner {
+          transform-origin: top left;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section
+        id="workflow-capture"
+        class="capture-panel"
+        aria-labelledby="workflow-title"
+      >
+        <div class="panel-inner">
+          <header class="header-row">
+            <div>
+              <div class="eyebrow">Controlled Codex proxy · 01 Workflow</div>
+              <h1 id="workflow-title">
+                A focused request, one question at a time, then an explicit gate
+              </h1>
+            </div>
+            <div class="pill">Scripted operator inputs</div>
+          </header>
+
+          <div class="conversation">
+            <article class="message operator">
+              <div class="label">Controlled operator</div>
+              <p>
+                Add one focused HTTP/JSON smoke-test fixture for the supplied
+                order. Set <code>riskLevel</code> to <code>high</code>,
+                preserve <code>protected-demo-id</code>, and treat
+                <code>reviewRequired: true</code> as the static oracle.
+              </p>
+            </article>
+
+            <article class="message">
+              <div class="label">Codex · focused question</div>
+              <p>
+                Is <code>smoke.qaas.yaml</code> the active local pattern this
+                demo should follow?
+                <span class="answer">Yes.</span>
+              </p>
+            </article>
+
+            <article class="message">
+              <div class="label">Codex · three sequential turns</div>
+              <div class="compact-qa">
+                <p>
+                  <span>May the <code>protected-demo-id</code> value change?</span>
+                  <span class="answer">No.</span>
+                </p>
+                <p>
+                  <span>Does this synthetic project use Common Hooks or modules?</span>
+                  <span class="answer">Neither.</span>
+                </p>
+                <p>
+                  <span>Should this proxy stop after static verification without running QaaS?</span>
+                  <span class="answer">Yes.</span>
+                </p>
+              </div>
+            </article>
+
+            <article class="message approval">
+              <div class="label">Codex · approval gate</div>
+              <p>
+                Create exactly three fixture files; preserve all three baseline
+                hashes; make no package, framework, or environment changes; do
+                not run QaaS. <strong>Approve, Revise, or Cancel?</strong>
+                <span class="answer">Approve.</span>
+              </p>
+            </article>
+          </div>
+
+          <footer class="footer">
+            <span>Inventory authority: candidate evidence only</span>
+            <span>Controlled visual · not a live or signed approval</span>
+          </footer>
+        </div>
+      </section>
+
+      <section
+        id="evidence-capture"
+        class="capture-panel"
+        aria-labelledby="evidence-title"
+      >
+        <div class="panel-inner">
+          <header class="header-row">
+            <div>
+              <div class="eyebrow">Controlled Codex proxy · 02 Evidence</div>
+              <h1 id="evidence-title">
+                Implemented as approved; verified with deliberately narrow claims
+              </h1>
+            </div>
+            <div class="pill">Static verification passed</div>
+          </header>
+
+          <div class="evidence-grid">
+            <article class="result-card">
+              <div class="status-row">
+                <span class="status">3 baseline hashes unchanged</span>
+                <span class="status">2 JSON matches</span>
+                <span class="status">5 YAML lines observed</span>
+                <span class="status neutral">QaaS not run</span>
+              </div>
+
+              <ul class="file-list" aria-label="Created files">
+                <li>Cases/order-review.qaas.yaml</li>
+                <li>TestData/order-review-input.json</li>
+                <li>Expected/order-review-output.json</li>
+              </ul>
+
+              <div class="command">
+                node validation/docs-demo-session/verify-demo.mjs
+              </div>
+
+              <div class="boundary">
+                Focused checks: public fixture tests 2/2; plan-contract tests
+                2/2. The integrated attempt timed out at 120 seconds, was
+                stopped, and is not counted as evidence.
+              </div>
+            </article>
+
+            <pre aria-label="Exact static verification result"><code>{
+  <span class="key">"status"</span>: <span class="string">"passed"</span>,
+  <span class="key">"scope"</span>:
+    <span class="string">"static synthetic fixture verification"</span>,
+  <span class="key">"checks"</span>: {
+    <span class="key">"baselineSha256"</span>: 3,
+    <span class="key">"observedYamlPatternLines"</span>: 5,
+    <span class="key">"inputJson"</span>: <span class="string">"parsed-and-matched"</span>,
+    <span class="key">"expectedJson"</span>: <span class="string">"parsed-and-matched"</span>
+  },
+  <span class="key">"claudeCodeExecuted"</span>: <span class="boolean">false</span>,
+  <span class="key">"qaasRuntimeExecuted"</span>: <span class="boolean">false</span>
+}</code></pre>
+          </div>
+
+          <footer class="footer">
+            <span>Proves: recorded Codex flow + listed static checks</span>
+            <span>Does not prove QaaS or target-system behavior</span>
+          </footer>
+        </div>
+      </section>
+    </main>
+    <script>
+      const capture = new URLSearchParams(window.location.search).get("capture");
+      if (capture === "workflow" || capture === "evidence") {
+        document.documentElement.dataset.capture = capture;
+      }
+    </script>
+  </body>
+</html>

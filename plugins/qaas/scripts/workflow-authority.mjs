@@ -27,6 +27,11 @@ import {
   createFingerprint,
 } from "./lib/fingerprint.mjs";
 import {
+  assertDocsCapabilitiesBacked,
+  createDocsMcpProbeReview,
+  docsMcpProbeRequest,
+} from "./lib/docs-mcp-probe.mjs";
+import {
   assertCurrentDocumentationSourceConfiguration,
   QAAS_DOCS_CONFIGURATION_NAMES,
 } from "./lib/docs-resolver.mjs";
@@ -46,6 +51,7 @@ import { assertNoSecrets } from "./lib/redact.mjs";
 import { attestQuery } from "./lib/query-read-adapter.mjs";
 import { validateQueryPlan } from "./lib/query-validation.mjs";
 import { mirrorProjectState } from "./lib/project-state-mirror.mjs";
+import { prepareSafeProjectWritePath } from "./lib/safe-project-write.mjs";
 import {
   computeHookSettingsInventory,
   computeRuntimeBundle,
@@ -70,16 +76,17 @@ import {
 import { resolveSourceReadRequest } from "./lib/source-read-request.mjs";
 import { discoverProgram } from "./lib/process-runner.mjs";
 
-const PLUGIN_VERSION = "0.3.0";
+const PLUGIN_VERSION = "0.4.0";
 const MAX_ARTIFACT_BYTES = 1024 * 1024;
 const MAX_REVIEW_BYTES = 64 * 1024;
 const MAX_HUMAN_REVIEW_BYTES = 24 * 1024;
+const MAX_CONTEXT_HUMAN_REVIEW_BYTES = 64 * 1024;
 const MAX_RESUME_BYTES = 32 * 1024;
 const MAX_RESUME_ITEMS = 12;
 const MAX_RECENT_EVIDENCE_HANDLES = 8;
 const MAX_EVIDENCE_TAIL_BYTES = 512 * 1024;
 const AUTHORITY_CAPABILITIES = Object.freeze({
-  writeContentBinding: false,
+  writeContentBinding: true,
 });
 const SOURCE_READ_PHASES = new Set([
   "DISCOVERING",
@@ -720,6 +727,21 @@ function validateContextBundle(projectId, files) {
   return { index, contextDigest: computedContextDigest };
 }
 
+function exactContextReviewFiles(files) {
+  return Object.entries(files)
+    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+    .map(([filePath, record]) => ({
+      path: filePath,
+      operation:
+        filePath === ".claude/CLAUDE.md"
+          ? "managed-block-merge"
+          : "atomic-write",
+      contentEncoding: "utf8",
+      approvedContentSha256: record.sha256,
+      content: record.content,
+    }));
+}
+
 function topicMetadata(relative, content) {
   const lines = content.replaceAll("\r\n", "\n").split("\n");
   const heading = lines.find((line) => /^#\s+\S/u.test(line));
@@ -1331,6 +1353,7 @@ async function createChallenge(context, active, {
     execution: "QaaS Run",
     mutation: "QaaS Mutate",
     capabilities: "QaaS Tools",
+    "docs-mcp-probe": "QaaS MCP Probe",
     "source-checkout": "QaaS Source",
     "source-read": "QaaS Read",
     "readiness-fact": "QaaS Fact",
@@ -1345,9 +1368,13 @@ async function createChallenge(context, active, {
     `Review these exact bounded ${kind} fields:\n${criticalReview}\n` +
     `Approval SHA-256: ${approvalDigest}\n` +
     `Approve exact QaaS ${kind} ${objectId}?`;
-  if (Buffer.byteLength(prompt, "utf8") > MAX_HUMAN_REVIEW_BYTES) {
+  const humanReviewLimit =
+    kind === "context"
+      ? MAX_CONTEXT_HUMAN_REVIEW_BYTES
+      : MAX_HUMAN_REVIEW_BYTES;
+  if (Buffer.byteLength(prompt, "utf8") > humanReviewLimit) {
     throw new Error(
-      `Exact ${kind} human review exceeds the ${MAX_HUMAN_REVIEW_BYTES}-byte bound`,
+      `Exact ${kind} human review exceeds the ${humanReviewLimit}-byte bound`,
     );
   }
   const question = {
@@ -1625,13 +1652,25 @@ async function prepareSourceRead(context, active, args) {
 
 async function prepareCapabilities(context, active) {
   const staged = await context.authority.readSigned("staging/capabilities.json");
+  const currentTransport = describeMcpTransport(context.env);
+  const probeRecord = await context.authority.readSigned(
+    "integrations/docs-mcp-probe.json",
+    { required: false },
+  );
+  const probeEvidence = assertDocsCapabilitiesBacked({
+    registry: staged.payload.registry,
+    evidence: probeRecord?.payload ?? null,
+    transport: currentTransport,
+    projectId: context.authority.projectId,
+  });
   const reviewDocument = {
     schemaVersion: "1.0",
     kind: "capabilities",
     projectId: context.authority.projectId,
     registry: staged.payload.registry,
     registryDigest: staged.payload.digest,
-    docsMcpTransport: describeMcpTransport(context.env),
+    docsMcpTransport: currentTransport,
+    docsMcpProbeDigest: probeEvidence?.digest ?? null,
   };
   reviewDocument.digest = canonicalDigest(reviewDocument);
   const prior = await context.authority.readSigned(
@@ -1649,6 +1688,50 @@ async function prepareCapabilities(context, active) {
   return createChallenge(context, active, {
     kind: "capabilities",
     objectId: `capabilities:${staged.payload.registry.version}`,
+    approvalDigest: reviewDocument.digest,
+    reviewDocument,
+  });
+}
+
+async function prepareDocsMcpProbe(context, active, args) {
+  if (
+    !["DISCOVERING", "CONTEXT_REVIEW", "PROJECT_READY", "TASK_DISCOVERY"].includes(
+      active.state.phase,
+    )
+  ) {
+    throw new Error(
+      "Documentation MCP schema discovery is not legal in the current phase",
+    );
+  }
+  const request = docsMcpProbeRequest(args);
+  const reviewDocument = createDocsMcpProbeReview({
+    projectId: context.authority.projectId,
+    phase: active.state.phase,
+    transport: describeMcpTransport(context.env),
+    request,
+  });
+  const prior = await context.authority.readSigned(
+    "artifacts/docs-mcp-probe-review.json",
+    { required: false },
+  );
+  await context.authority.writeSigned(
+    "artifacts/docs-mcp-probe-review.json",
+    {
+      ...reviewDocument,
+      sequence: (prior?.payload.sequence ?? -1) + 1,
+    },
+    { expectedSequence: prior?.payload.sequence ?? -1 },
+  );
+  await supersedeApprovals(context.authority, {
+    kind: "docs-mcp-probe",
+    sessionId: active.attestation.sessionId,
+    reason: "A fresh exact documentation MCP schema probe replaced prior access",
+  });
+  return createChallenge(context, active, {
+    kind: "docs-mcp-probe",
+    objectId:
+      `docs-mcp-probe:${request.server}:` +
+      reviewDocument.transportDigest.slice(0, 16),
     approvalDigest: reviewDocument.digest,
     reviewDocument,
   });
@@ -1686,6 +1769,24 @@ async function commitCapabilities(context, active) {
   const validation = validateCapabilityRegistry(staged.payload.registry);
   if (!validation.valid) {
     throw new Error("Staged capability registry became invalid");
+  }
+  const probeRecord = await context.authority.readSigned(
+    "integrations/docs-mcp-probe.json",
+    { required: false },
+  );
+  const probeEvidence = assertDocsCapabilitiesBacked({
+    registry: staged.payload.registry,
+    evidence: probeRecord?.payload ?? null,
+    transport: currentTransport,
+    projectId: context.authority.projectId,
+  });
+  if (
+    (probeEvidence?.digest ?? null) !==
+    (review.payload.docsMcpProbeDigest ?? null)
+  ) {
+    throw new Error(
+      "Documentation MCP probe evidence changed after exact capability review",
+    );
   }
   const prior = await context.authority.readSigned(
     "integrations/capabilities.json",
@@ -1755,11 +1856,7 @@ async function prepareContext(context, active) {
     readiness: readiness.payload.document,
     packageSnapshotDigest: discoveryPackages.payload.snapshotDigest,
     baseFingerprintDigest: baseFingerprint.digest,
-    fileDigests: Object.fromEntries(
-      Object.entries(staged.payload.files)
-        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
-        .map(([filePath, record]) => [filePath, record.sha256]),
-    ),
+    files: exactContextReviewFiles(staged.payload.files),
   };
   proposal.digest = canonicalDigest(proposal);
   const existing = await context.authority.readSigned("artifacts/context-proposal.json", {
@@ -1926,6 +2023,10 @@ async function preparePlanLike(context, active, kind) {
     if (document.staticVerificationDigest !== fingerprint.payload.digest) {
       throw new Error("Execution plan static verification is stale");
     }
+    await currentStoredFingerprint(
+      context,
+      "fingerprints/staticVerificationFingerprint.json",
+    );
     const normalize = (value) =>
       String(value).replaceAll("\\", "/").replace(/\/+$/u, "");
     const protectedPaths = [
@@ -2046,6 +2147,19 @@ async function preparePlanLike(context, active, kind) {
     objectId: document[rule.id],
     artifactDigest: artifact.payload.digest,
     document,
+    ...(kind === "plan"
+      ? {
+          writeBindings: document.changes
+            .map(({ path: targetPath, operation, targetSha256 }) => ({
+              path: targetPath,
+              operation,
+              targetSha256,
+            }))
+            .sort((left, right) =>
+              left.path < right.path ? -1 : left.path > right.path ? 1 : 0,
+            ),
+        }
+      : {}),
     processBindings,
   };
   reviewDocument.digest = canonicalDigest(reviewDocument);
@@ -2136,7 +2250,10 @@ async function prepareQuery(context, active) {
     throw new Error("Query plan does not bind the current execution plan");
   }
   const fingerprintStage =
-    active.state.fingerprints?.staticVerificationFingerprint
+    active.state.phase === "DIAGNOSING" &&
+    active.state.fingerprints?.onboardingFingerprint
+      ? "onboardingFingerprint"
+      : active.state.fingerprints?.staticVerificationFingerprint
       ? "staticVerificationFingerprint"
       : active.state.fingerprints?.onboardingFingerprint
         ? "onboardingFingerprint"
@@ -2223,21 +2340,12 @@ async function mergeClaudeBlock(target, block) {
   await atomicWriteText(target, next, { mode: 0o600 });
 }
 
-async function canonicalizeNearest(target) {
-  const suffix = [];
-  let cursor = path.resolve(target);
-  while (true) {
-    try {
-      const resolved = await realpath(cursor);
-      return path.join(resolved, ...suffix.reverse());
-    } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
-      const parent = path.dirname(cursor);
-      if (parent === cursor) throw error;
-      suffix.push(path.basename(cursor));
-      cursor = parent;
-    }
-  }
+async function writeOnboardingFingerprintMirror(target, fingerprint) {
+  await atomicWriteText(
+    target,
+    `${canonicalJson(fingerprint)}\n`,
+    { mode: 0o600 },
+  );
 }
 
 async function commitContext(context, active) {
@@ -2263,22 +2371,59 @@ async function commitContext(context, active) {
   }
   const staged = await context.authority.readSigned("staging/context.json");
   validateContextBundle(context.authority.projectId, staged.payload.files);
+  const currentReviewedFiles = exactContextReviewFiles(staged.payload.files);
+  if (
+    !Array.isArray(proposal.payload.files) ||
+    !safeEqualHex(
+      canonicalDigest(proposal.payload.files),
+      canonicalDigest(currentReviewedFiles),
+    )
+  ) {
+    throw new Error(
+      "Staged context no longer matches the exact file contents approved by the user",
+    );
+  }
+  const safeTargets = new Map();
+  for (const relative of Object.keys(staged.payload.files).sort()) {
+    const requested = path.resolve(
+      context.projectRoot,
+      ...relative.split("/"),
+    );
+    safeTargets.set(
+      relative,
+      await prepareSafeProjectWritePath(context.projectRoot, requested),
+    );
+  }
+  const fingerprintMirrorTarget = await prepareSafeProjectWritePath(
+    context.projectRoot,
+    path.resolve(
+      context.projectRoot,
+      ".claude",
+      "qaas",
+      "fingerprint.json",
+    ),
+  );
   for (const [relative, record] of Object.entries(staged.payload.files).sort(
     ([left], [right]) => (left < right ? -1 : left > right ? 1 : 0),
   )) {
     if (!safeEqualHex(record.sha256, sha256(record.content))) {
       throw new Error(`Staged context content is corrupt: ${relative}`);
     }
-    const target = path.resolve(context.projectRoot, ...relative.split("/"));
-    const canonicalTarget = await canonicalizeNearest(target);
-    const rel = path.relative(context.projectRoot, canonicalTarget);
-    if (rel.startsWith("..") || path.isAbsolute(rel)) {
-      throw new Error(`Context target escapes the project: ${relative}`);
+    const requested = path.resolve(
+      context.projectRoot,
+      ...relative.split("/"),
+    );
+    const safeTarget = await prepareSafeProjectWritePath(
+      context.projectRoot,
+      requested,
+    );
+    if (safeTarget !== safeTargets.get(relative)) {
+      throw new Error(`Context target identity changed before write: ${relative}`);
     }
     if (relative === ".claude/CLAUDE.md") {
-      await mergeClaudeBlock(canonicalTarget, record.content);
+      await mergeClaudeBlock(safeTarget, record.content);
     } else {
-      await atomicWriteText(canonicalTarget, record.content, { mode: 0o600 });
+      await atomicWriteText(safeTarget, record.content, { mode: 0o600 });
     }
   }
   const fingerprint = await createFingerprint({
@@ -2294,6 +2439,19 @@ async function commitContext(context, active) {
     fingerprint,
     { expectedDigest: oldFingerprint?.digest ?? null },
   );
+  const currentMirrorTarget = await prepareSafeProjectWritePath(
+    context.projectRoot,
+    path.resolve(
+      context.projectRoot,
+      ".claude",
+      "qaas",
+      "fingerprint.json",
+    ),
+  );
+  if (currentMirrorTarget !== fingerprintMirrorTarget) {
+    throw new Error("Fingerprint mirror target identity changed before write");
+  }
+  await writeOnboardingFingerprintMirror(currentMirrorTarget, fingerprint);
   const next = await commitTransition(context.authority, active.state, "PROJECT_READY", {
     reason: "Committed exact approved context bundle",
     patch: {
@@ -2499,7 +2657,7 @@ async function recoverWorkflow(context, active, mode) {
     ),
     blocker: null,
     nextLegalAction:
-      "Apply only existing approved plan scope, then rerun build/template verification",
+      "Apply only existing approved plan scope, then prepare fresh exact user-run build/template handoffs and import bounded evidence",
   };
   let next;
   if (active.state.phase === "DIAGNOSING") {
@@ -2618,6 +2776,9 @@ export async function runWorkflowAuthority(
       if (args.kind === "context") return prepareContext(context, active);
       if (args.kind === "capabilities") {
         return prepareCapabilities(context, active);
+      }
+      if (args.kind === "docs-mcp-probe") {
+        return prepareDocsMcpProbe(context, active, args);
       }
       if (args.kind === "source-checkout") {
         return prepareSourceCheckout(context, active);

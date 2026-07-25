@@ -118,8 +118,11 @@ private paths, and internal endpoints.
 7. Audit tracked files for secrets, internal endpoints, local absolute paths,
    private fixtures/results, and any `LICENSE`.
 8. Validate on Linux CI.
-9. Tag the version and publish the bundle/checksum as a pre-release until target
-   Claude Code/MiniMax acceptance is complete.
+9. Follow the [release-owner workflow](release.md), including its canonical
+   repository, immutable-release, Pages, Docker Hub, exact-asset, and rerun
+   checks.
+10. Keep the GitHub release marked as a pre-release until target Claude
+    Code/MiniMax acceptance is complete.
 
 ## No-deletion development policy
 

@@ -4,7 +4,7 @@ The QaaS plugin helps a QA automation engineer turn an approved test design
 into a minimal, verified change in an existing QaaS test project. It gives
 Claude Code a disciplined way to learn the project, retrieve current QaaS
 documentation, plan the exact change with the user, implement only that plan,
-and optionally run and diagnose the result.
+and optionally prepare a user-run handoff and diagnose imported evidence.
 
 This stage is deliberately human-in-the-loop. It is designed to make
 test creation faster and QaaS adoption easier without allowing a model to fill
@@ -12,15 +12,16 @@ unknowns with guesses. It is not a general test generator, does not change the
 QaaS framework, does not manage a test environment by default, and does not
 claim fully autonomous QA.
 
-Version `0.3.0` is a Codex-proxy preview. The dependency-free plugin checks and
-private proxy evaluation have been exercised outside the target environment;
-acceptance with Claude Code >=2.1.180 and MiniMax M2.7 remains a separate
-air-gapped validation step.
+Version `0.4.0` adds a self-contained documentation site and configurable
+Helm/WikiAll documentation discovery to the Codex-proxy preview. The
+dependency-free plugin, documentation, and container checks are exercised
+outside the target environment; acceptance with Claude Code >=2.1.180 and
+MiniMax M2.7 remains a separate air-gapped validation step.
 
 ## Start in 60 seconds
 
 ```text
-/plugin marketplace add eldarush/QaaS-Plugin
+/plugin marketplace add TheSmokeTeam/QaaS-Plugin
 /plugin install qaas@qaas-plugin
 /reload-plugins
 /qaas:doctor
@@ -43,12 +44,14 @@ a separate approval before an optional `/qaas:run`.
 - [One-time project onboarding](#one-time-project-onboarding)
 - [Understanding and authority](#understanding-and-authority)
 - [Configuration](#configuration)
+- [Documentation site and container](#documentation-site-and-container)
 - [Planning and implementation](#planning-and-implementation)
 - [Running and evidence](#running-and-evidence)
 - [Safety model](#safety-model)
 - [Update, rollback, and removal](#update-rollback-and-removal)
 - [Troubleshooting](#troubleshooting)
 - [Development and evaluation](#development-and-evaluation)
+- [Release owner workflow](docs/release.md)
 - [Known limitations](#known-limitations)
 
 ## What it can help with
@@ -67,8 +70,8 @@ After one-time onboarding, users can ask for work such as:
 - Upgrade a project to the latest compatible QaaS packages that can be proven
   from its configured package sources.
 - Document the project and its actual commands.
-- Build, render a QaaS template, execute an approved test, and interpret
-  QaaS/Allure/ReportPortal evidence.
+- Prepare exact reviewed restore/build/template/test command vectors for the
+  user to run, then import bounded evidence for interpretation.
 
 The plugin supports both YAML configuration-as-code and C# configuration. It
 follows the style already present in the project. It does not introduce a test
@@ -103,7 +106,7 @@ the user confirms for that repository.
 Inside Claude Code:
 
 ```text
-/plugin marketplace add eldarush/QaaS-Plugin
+/plugin marketplace add TheSmokeTeam/QaaS-Plugin
 /plugin install qaas@qaas-plugin
 /reload-plugins
 ```
@@ -115,7 +118,7 @@ local Claude settings instead of enabling the plugin for every project.
 The equivalent command-line form is:
 
 ```powershell
-claude plugin marketplace add eldarush/QaaS-Plugin
+claude plugin marketplace add TheSmokeTeam/QaaS-Plugin
 claude plugin install qaas@qaas-plugin --scope local
 ```
 
@@ -160,11 +163,14 @@ For a persistent air-gapped installation:
 
 The plugin does not download its own prerequisites. QaaS packages, internal CA
 certificates, and optional tools must already be available through approved
-air-gapped sources. Documentation and Artifactory have immutable distribution
-defaults described below; they are contacted only by an explicit focused read,
-never automatically or in the background. Startup, hooks, and doctor do not
-contact them; onboarding may issue an explicit focused documentation lookup
-when a missing QaaS fact requires it.
+air-gapped sources. Documentation has explicit internal Helm/Kubernetes and
+WikiAll selectors. `QAAS_DOCS_AIRGAP=1` disables public fallback; a configured
+raw ZIM path is recorded as an identity/checksum only until an approved bounded
+reader is available. Artifactory reads require an exact project-relevant
+`--base-url` in a one-use source-read review. Sources are contacted only by an
+explicit focused read, never automatically or in the background. Startup,
+hooks, and doctor do not contact them; onboarding may issue an explicit focused
+documentation lookup when a missing QaaS fact requires it.
 
 See [air-gap configuration](docs/airgap-configuration.md) and
 [internal marketplace setup](docs/internal-marketplace.md).
@@ -177,8 +183,8 @@ Exactly six lifecycle commands are visible:
 | --- | --- |
 | `/qaas:onboard` | Learn one test repository and propose its durable project context. |
 | `/qaas:plan` | Interview for one requested change and produce an exact implementation plan. |
-| `/qaas:implement` | Apply an approved, current plan and perform static verification. |
-| `/qaas:run` | Review and execute a separately approved test execution plan. |
+| `/qaas:implement` | Apply an approved current plan and prepare exact user-run static-verification handoffs. |
+| `/qaas:run` | Review a separate execution plan, show its exact user-run command, and import bounded evidence. |
 | `/qaas:diagnose` | Explain and repair an in-scope failure using approved evidence. |
 | `/qaas:doctor` | Inspect installed tools, hooks, integrations, and workflow health without installing anything. |
 
@@ -257,7 +263,8 @@ onboarding folder added to the project is:
 exists, onboarding proposes one delimited, idempotent QaaS-managed block and
 preserves user-owned content. Detailed facts live in topic files and load only
 when relevant. User-approved custom topic files may be added under
-`.claude/qaas/` and must be indexed.
+`.claude/qaas/` and must be indexed. `fingerprint.json` is generated from the
+actual approved project at context commit; it is not a shipped placeholder.
 
 This project context is committed by default so later sessions share the same
 confirmed model. Secret values, raw reports, and large logs are never stored
@@ -292,19 +299,49 @@ Changing QaaS details are retrieved rather than copied into the plugin. Exact
 configuration keys, hook interfaces, packages, commands, and current versions
 must have documentation/package provenance.
 
-Two endpoints are built into the reviewed distribution:
-
-- QaaS documentation: [https://docs.qaas.online/](https://docs.qaas.online/)
-- Artifactory: [https://jfrog.com/artifactory/](https://jfrog.com/artifactory/)
-
-They have no runtime environment override and require no normal setup. A
-focused documentation or Artifactory command may perform one bounded read
-(maximum 16 KiB). Loading, hooks, doctor, and general conversation perform no
-network call. Onboarding performs no background lookup, but may explicitly
-request one focused QaaS fact. Organization-specific air-gapped bundles may
-replace the two values only as a centrally reviewed distribution-build change.
+The public QaaS documentation distribution endpoint is
+[https://docs.qaas.online/](https://docs.qaas.online/). An explicitly configured
+internal source may replace it, and `QAAS_DOCS_AIRGAP=1` disables public
+fallback. Artifactory has no generic built-in endpoint: the workflow accepts
+only an exact project-relevant HTTPS `--base-url` bound into a one-use
+source-read review. A source-read command returns at most 16 KiB. A
+documentation search may inspect one configured `llms.txt`, `sitemap.xml`, or
+homepage index up to 256 KiB, but returns at most 16 KiB of candidates and then
+reads only the selected focused page. Loading, hooks, doctor, and general
+conversation perform no network call. Onboarding performs no background
+lookup, but may explicitly request one focused QaaS fact.
 
 ## Configuration
+
+Documentation locations are inherited from the environment that starts Claude
+Code:
+
+| Variable | Meaning |
+| --- | --- |
+| `QAAS_DOCS_HELM_URL` | QaaS documentation base URL served by the organization's Helm/Kubernetes deployment. |
+| `QAAS_DOCS_WIKIALL_URL` | WikiAll-hosted QaaS documentation HTTP base URL. |
+| `QAAS_DOCS_MCP_URL` | Streamable HTTP endpoint for an approved WikiAll documentation MCP server. |
+| `QAAS_DOCS_MCP_CREDENTIAL_ENV` | Name of a separate optional bearer-credential variable; never the credential value. |
+| `QAAS_DOCS_AIRGAP` | Strict boolean selector; when true, public documentation fallback is removed. |
+| `QAAS_DOCS_ZIM_PATH` | Reviewed local ZIM identity/checksum only; it is not readable without an approved bounded WikiAll/OpenZIM MCP. |
+
+The resolver prefers one approved and successfully probed WikiAll
+`docs.search`/`docs.read` capability pair, then Helm, WikiAll HTTP, and—only
+outside air-gap mode—the public docs fallback. A raw local ZIM is provenance,
+not an executable fallback. MCP server and tool names are discovered only from
+the signed capability registry; they are never guessed.
+The Streamable HTTP client supports both stateless servers and a validated
+server-issued session ID, and selects the exact matching JSON-RPC response when
+an SSE stream contains multiple events.
+`QAAS_DOCS_PRIMARY_URL` and `QAAS_DOCS_SECONDARY_URL` remain migration-only
+aliases for the Helm and WikiAll HTTP variables. Conflicting canonical and
+alias values fail closed.
+
+Set these values in the user's inherited environment or organization-managed
+runtime. Approved project context may record exact non-secret endpoint
+identities and selector names, but never credentials. See the packaged
+[documentation source configuration](plugins/qaas/references/configuration/documentation-sources.md)
+for PowerShell, Linux, and project MCP examples.
 
 NuGet endpoints are derived from the target project's `NuGet.Config`,
 project/props/targets restore properties, and restore evidence. If several
@@ -340,6 +377,74 @@ If internal TLS requires bypassing certificate validation, it must be
 explicitly accepted for one exact HTTPS Git source and one operation; the
 plugin never changes global Git TLS configuration.
 
+## Documentation site and container
+
+The release includes a dependency-free, air-gap-ready documentation surface:
+
+- GitHub Pages: `https://thesmoketeam.github.io/QaaS-Plugin/`
+- Container: `docker.io/thesmoketeam/qaas-plugin-docs:0.4.0`
+- Offline image archive and Kubernetes manifest in the `v0.4.0` release assets.
+
+After publication, the `v0.4.0` tag and release assets are immutable; a changed
+artifact requires a new version.
+
+The container serves on port `8080`, runs as a non-root user, needs no writable
+root filesystem, and makes no browser-side network requests. It exposes one
+external link only: the configured repository control. Helm and WikiAll
+locations are displayed as non-clickable operator configuration.
+
+For a connected deployment, download
+`qaas-plugin-docs-0.4.0.registry-digest.txt` from the same immutable release
+and run the exact digest reference it contains:
+
+```powershell
+$image = (Get-Content -Raw `
+  "qaas-plugin-docs-0.4.0.registry-digest.txt").Trim()
+docker run --detach --name qaas-plugin-docs `
+  --publish 127.0.0.1:8080:8080 `
+  --read-only `
+  --tmpfs /tmp:rw,noexec,nosuid,size=16m `
+  --cap-drop ALL `
+  --security-opt no-new-privileges `
+  --env QAAS_PLUGIN_REPOSITORY_URL=https://github.com/TheSmokeTeam/QaaS-Plugin `
+  --env QAAS_DOCS_HELM_URL=https://qaas-docs.internal.example/ `
+  --env QAAS_DOCS_WIKIALL_URL=https://wikiall.internal.example/qaas/ `
+  $image
+```
+
+For connected Kubernetes, prefer the digest-pinned
+`qaas-plugin-docs-kubernetes-0.4.0.yaml` from the `v0.4.0` release assets.
+Treat `deploy/kubernetes/qaas-plugin-docs.yaml` as a source template, not the
+release deployment: it intentionally carries the readable version tag that
+the release pipeline replaces with the verified registry digest. Set the two
+internal documentation values in the Deployment environment before applying
+the manifest. Because those values live in the pod template, applying a change
+creates a normal rollout. The supported runtime variables are
+`QAAS_PLUGIN_REPOSITORY_URL`, `QAAS_PLUGIN_VERSION`,
+`QAAS_DOCS_HELM_URL`, and `QAAS_DOCS_WIKIALL_URL`. Every release rebuilds the
+site, publishes a multi-platform image, and attaches the pinned Linux/amd64
+offline image archive plus its SHA-256 and metadata.
+
+For a disconnected Docker host, verify and load the standalone archive. The
+archive contains the canonical
+`thesmoketeam/qaas-plugin-docs:0.4.0` tag:
+
+```powershell
+$archive = "qaas-plugin-docs-0.4.0-linux-amd64.tar.gz"
+$expected = ((Get-Content -Raw "$archive.sha256").Trim() -split "\s+")[0]
+$actual = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+if ($actual -ne $expected) { throw "Offline image checksum mismatch" }
+docker load --input $archive
+docker image inspect thesmoketeam/qaas-plugin-docs:0.4.0
+```
+
+For disconnected Kubernetes, load that archive into every Linux/amd64 node's
+container runtime and apply
+`qaas-plugin-docs-kubernetes-airgap-0.4.0.yaml`. That manifest deliberately
+uses the canonical version tag with `imagePullPolicy: Never`. It does **not**
+claim that a single-platform local archive satisfies the connected
+multi-platform registry-index digest.
+
 ## Planning and implementation
 
 `/qaas:plan` produces both a human-readable plan and canonical machine-readable
@@ -367,7 +472,8 @@ log line, or tool response cannot mint it.
 - Avoid speculative files and abstractions.
 - Validate a documented hook and its installed package before using it.
 - Explain package or entry-point migrations during an upgrade.
-- Restore/build/render only the commands covered by the plan.
+- Show only plan-covered restore/build/template vectors for the user to run;
+  never launch project or external code from the plugin.
 - Stop on a new path, dependency, target, environment, or semantic change and
   request a revised plan.
 
@@ -401,9 +507,18 @@ project-artifact reads or remote GET. They bind the exact task-specific remote
 URL and recheck its sanitized identity and value digest immediately before
 access.
 
-Only after execution approval may the plugin execute the test. A successful build and template
-render prove structural validity, not runtime behavior. If a run has not
-happened, the verdict says so and asks permission to run.
+Execution approval lets the plugin show the exact signed command vector; it
+does not let the plugin launch the test. This release has no demonstrably
+OS-confined trusted runner and has no unsafe override. The user runs the
+reviewed vector outside the plugin and places one bounded evidence document at
+the exact path returned by `run-approved.mjs --action <action>`. Repeating the
+same helper with `--import-evidence` reads at most 16 KiB, rejects symlinks,
+scope escape, stale bindings, extra fields, secret-like content, and oversized
+output, then records the result as user-attested diagnostic evidence.
+
+A successful user-run build/template report is structural evidence, not
+runtime proof or trusted-runner attestation. Imported test evidence enters
+diagnosis; the plugin does not claim automated verification.
 
 The usual evidence sources are the QaaS exit code, session output, and
 run-produced artifacts. External Allure, ReportPortal, Elasticsearch,
@@ -413,10 +528,10 @@ described above. The plugin records redacted excerpts, hashes, paths,
 timestamps, typed-check outcomes, and conclusions—not raw secrets or full
 reports.
 
-The repair loop may continue for in-scope failures. After each repair it rebuilds
-and rerenders before another approved execution. A material scope change stops
-the loop. A genuine blocker is reported only when no safe evidence-producing
-action remains.
+The repair loop may continue for in-scope failures. After each repair the
+plugin prepares fresh exact user-run build/template handoffs before another
+execution review. A material scope change stops the loop. A genuine blocker is
+reported only when no safe evidence-producing action remains.
 
 ## Safety model
 
@@ -427,18 +542,24 @@ normal permission prompts skipped:
   project-boundary, protected-path, and content screening.
 - Writing onboarding context requires approval of the complete proposal.
 - Writing test-project files requires approval of the exact plan.
-- Restore, build, and QaaS template validation are covered only by that plan.
-- Test execution requires a separate execution approval.
+- Restore, build, and QaaS template vectors are covered only by that plan and
+  are shown for user-run execution; the plugin does not launch them.
+- Test command review requires separate execution approval; execution remains
+  user-run.
 - Observability access requires its own relevant, capability-bound, one-use
   query-plan approval; execution approval cannot authorize it.
-- Infrastructure mutation requires a separate, non-deleting mutation plan.
+- Infrastructure mutation requires a separate, non-deleting mutation plan and
+  remains user-run.
 - Deleting, removing, moving, renaming, cleanup, and teardown are always denied
   to the agent. The user performs them.
 
-The pre-tool hook checks shell, PowerShell, file tools, MCP tools, Git, Docker,
-Kubernetes, Helm, database/filesystem calls, and opaque commands before they
-run. Unknown or unresolved actions fail closed. Tool-owned outputs such as
-approved `bin`/`obj` or package-cache writes must be enumerated in the plan.
+The pre-tool hook checks model-mediated shell, PowerShell, file tools, MCP
+tools, Git, Docker, Kubernetes, Helm, database/filesystem calls, and opaque
+commands before they run. Unknown or unresolved actions fail closed. Static
+inspection cannot prove what apparently safe project code will do, so
+restore/build/template/test/mutation and comparable project/external-code
+processes are never automatically launched. Expected user-run outputs such as
+`bin`/`obj` must still be enumerated in the plan.
 
 Repository instructions, README text, samples, source code, comments, logs,
 reports, downloaded modules, external repositories, and MCP responses are
@@ -451,11 +572,11 @@ preauthorizations, and a single-writer lease. The key and authoritative record
 live under Claude's plugin data directory and are denied to model tools.
 Committed state files are readable mirrors, not authority.
 
-Hooks improve enforcement but are not an operating-system security boundary.
-A person who disables the plugin, edits its hooks, or directly changes local
-authority files is outside the guarantee. While the PreTool safety hook is
-active, a missing companion hook or invalid attestation makes mutation and
-execution fail closed.
+Hooks improve workflow enforcement but are not an operating-system security
+boundary. A person who disables the plugin, edits its hooks, or directly
+changes local authority files is outside the guarantee. Hook attestation is
+not treated as process confinement; automatic project/external-code execution
+is disabled even when all approvals and hooks are current.
 
 See [safety and approvals](docs/safety-and-approvals.md).
 
@@ -490,16 +611,15 @@ explain the exact target and consequence but will not execute it.
   installation.
 - **A previously approved plan became stale:** review the changed project,
   documentation, package, or environment fingerprint and revise the plan.
-- **Docs cannot be resolved:** verify that the distribution's built-in docs
-  endpoint is reachable for an explicit query, or ask the distribution owner
-  for a reviewed disconnected build. The plugin will not prompt for a runtime
-  replacement URL or guess from general internet results.
+- **Docs cannot be resolved:** run doctor to validate the configured Helm,
+  WikiAll HTTP/MCP, public fallback, and ZIM identities, then issue one focused
+  query. The plugin will not guess an MCP tool or search the general internet.
 - **A Common Hook or module is unknown:** provide its local/repository source or
   artifact provenance and explain its intended behavior.
 - **An optional CLI is missing:** use an already configured MCP or local
   alternative. Install nothing from the internet in an air-gapped environment.
-- **Template succeeds but the test is unproven:** approve a run and define the
-  runtime success evidence.
+- **User-run template evidence succeeds but the test is unproven:** approve an
+  execution handoff and define the runtime success evidence.
 - **Deletion is required:** perform it yourself after reviewing the exact target
   and recovery consequences.
 
@@ -528,7 +648,8 @@ execute QaaS or claim model performance.
 See [architecture](docs/architecture.md),
 [development](docs/development.md), and
 [evaluation method](docs/evaluation-method.md). Release owners should complete
-the [target acceptance checklist](docs/target-acceptance.md).
+the [release workflow](docs/release.md) and
+[target acceptance checklist](docs/target-acceptance.md).
 
 ## Known limitations
 
@@ -536,6 +657,10 @@ the [target acceptance checklist](docs/target-acceptance.md).
 - The plugin cannot prove subjective “100% understanding”; it enforces an
   explicit completeness matrix and user confirmation instead.
 - It cannot make hooks an OS sandbox or protect against a user disabling them.
+- It cannot automatically restore, build, render templates, execute tests, or
+  mutate infrastructure until a demonstrably OS-confined trusted runner is
+  implemented and reviewed. The current fallback is exact user-run handoff and
+  bounded diagnostic evidence import.
 - Exact QaaS capabilities and latest package versions require accessible current
   documentation and package metadata.
 - Live ReportPortal, Elasticsearch, Thanos, Kubernetes, and database behavior

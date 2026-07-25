@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import { createInterface } from "node:readline";
@@ -177,6 +178,10 @@ test("local MCP encoder initializes, lists one tool, and preserves exact bytes",
     Buffer.from(corpus, "utf8"),
   );
   assert.match(encoded.transportSha256, /^[a-f0-9]{64}$/u);
+  assert.equal(
+    encoded.transportSha256,
+    createHash("sha256").update(Buffer.from(corpus, "utf8")).digest("hex"),
+  );
   assert.equal(Object.hasOwn(encoded, "sha256"), false);
 });
 

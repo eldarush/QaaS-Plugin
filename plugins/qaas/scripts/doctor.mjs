@@ -15,7 +15,11 @@ import { validateState } from "./lib/state.mjs";
 import { checkContextBudget } from "./check-context-budget.mjs";
 import { validatePlugin } from "./validate-plugin.mjs";
 import { isProjectActivated } from "./lib/activation.mjs";
-import { DEFAULT_QAAS_DOCS_URL } from "./lib/docs-resolver.mjs";
+import { AUTOMATED_EXECUTION_POLICY } from "./lib/execution-policy.mjs";
+import {
+  attestDocumentationSourceConfiguration,
+  DEFAULT_QAAS_DOCS_URL,
+} from "./lib/docs-resolver.mjs";
 
 const PROGRAMS = Object.freeze([
   "node",
@@ -246,7 +250,13 @@ export async function runDoctor({
     scriptDirectory: path.join(pluginRoot, "scripts"),
   });
   const effectivePluginVersion = pluginVersion ?? plugin.version;
-  const [contextBudget, ownHooks, runtimeBundle, settings] =
+  const [
+    contextBudget,
+    ownHooks,
+    runtimeBundle,
+    settings,
+    documentationConfiguration,
+  ] =
     await Promise.all([
       checkContextBudget({
         projectRoot,
@@ -263,6 +273,15 @@ export async function runDoctor({
         projectRoot,
         userHome: env.USERPROFILE ?? env.HOME ?? null,
       }),
+      attestDocumentationSourceConfiguration(env)
+        .then((attestation) => ({
+          valid: true,
+          attestation,
+        }))
+        .catch((error) => ({
+          valid: false,
+          error: error.message,
+        })),
     ]);
   const tools = {};
   for (const program of PROGRAMS) {
@@ -337,6 +356,9 @@ export async function runDoctor({
   if (!plugin.valid) blocking.push("plugin contract validation failed");
   if (!ownHooks.valid) blocking.push("mandatory hook configuration is invalid");
   if (runtimeBundle.error) blocking.push("runtime enforcement bundle cannot be hashed");
+  if (!documentationConfiguration.valid) {
+    blocking.push("documentation source configuration is invalid");
+  }
   if (settings.disableAllHooks) blocking.push("disableAllHooks is active");
   if (settings.unknownSideEffectingHooks) {
     blocking.push("other settings-defined hooks make write/run safety unverified");
@@ -378,7 +400,13 @@ export async function runDoctor({
       staticExecutableInputScan: true,
       opaquePrebuiltBehaviorProvable: false,
       limitation:
-        "Opaque prebuilt QaaS hooks/packages cannot be proven deletion-free locally; use an organizationally reviewed package allowlist.",
+        "Static source scanning cannot prove indirect behavior. This release does not automatically execute project/external code.",
+    },
+    projectCodeExecution: {
+      ...AUTOMATED_EXECUTION_POLICY,
+      exactReviewedCommandHandoff: true,
+      boundedUserEvidenceImport: true,
+      importedEvidenceAuthority: "user-attested-diagnostic",
     },
     sourceCheckout: {
       automatedCheckoutEnabled: true,
@@ -395,6 +423,14 @@ export async function runDoctor({
     documentationSources: {
       builtIn: DEFAULT_QAAS_DOCS_URL,
       zeroSetup: true,
+      zeroSetupPublicFallback:
+        documentationConfiguration.valid &&
+        documentationConfiguration.attestation.airgap?.enabled !== true,
+      resolutionOrder:
+        documentationConfiguration.valid
+          ? [...documentationConfiguration.attestation.resolutionOrder]
+          : [],
+      configuration: documentationConfiguration,
       accessedOnlyByExplicitBoundedQuery: true,
     },
     plugin,

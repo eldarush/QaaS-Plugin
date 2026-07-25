@@ -13,7 +13,6 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { runDoctor } from "../scripts/doctor.mjs";
 import {
-  BUILT_IN_QAAS_ARTIFACTORY_URL,
   BUILT_IN_QAAS_DOCS_URL,
   builtInEndpoint,
 } from "../scripts/lib/built-in-endpoints.mjs";
@@ -53,58 +52,190 @@ async function temporaryDirectory(t, prefix) {
   return directory;
 }
 
-test("distribution endpoints are immutable and ignore core URL environment overrides", async () => {
+test("the immutable public docs fallback stays separate from reviewed Artifactory input", async () => {
   assert.equal(BUILT_IN_QAAS_DOCS_URL, "https://docs.qaas.online/");
-  assert.equal(
-    BUILT_IN_QAAS_ARTIFACTORY_URL,
-    "https://jfrog.com/artifactory/",
-  );
 
   const docsEndpoint = builtInEndpoint("docs");
-  const artifactoryEndpoint = builtInEndpoint("artifactory");
   assert.equal(Object.isFrozen(docsEndpoint), true);
-  assert.equal(Object.isFrozen(artifactoryEndpoint), true);
+  assert.throws(
+    () => builtInEndpoint("artifactory"),
+    /Unknown built-in QaaS endpoint/u,
+  );
   assert.throws(() => {
     docsEndpoint.url = "https://changed.example.test/";
   }, TypeError);
 
-  const legacyOverrides = {
-    QAAS_DOCS_PRIMARY_URL: "https://ignored-primary.example.test/",
-    QAAS_DOCS_SECONDARY_URL: "https://ignored-secondary.example.test/",
-    QAAS_ARTIFACTORY_URL: "https://ignored-artifactory.example.test/",
-    QAAS_ARTIFACTORY_CREDENTIAL_ENV: "IGNORED_TOKEN",
-    IGNORED_TOKEN: "not-used",
+  const configuredEnvironment = {
+    QAAS_DOCS_HELM_URL: "https://helm-docs.example.test/qaas/",
+    QAAS_DOCS_WIKIALL_URL: "https://wikiall.example.test/qaas/",
   };
-  const sources = resolveDocumentationSources({ env: legacyOverrides });
-  assert.equal(sources.primaryUrl, BUILT_IN_QAAS_DOCS_URL);
-  assert.equal(sources.secondaryUrl, null);
+  const sources = resolveDocumentationSources({ env: configuredEnvironment });
+  assert.deepEqual(
+    sources.httpSources.map((entry) => entry.source),
+    ["helm-http", "wikiall-http", "built-in-public"],
+  );
+  assert.equal(
+    sources.helmUrl,
+    "https://helm-docs.example.test/qaas/",
+  );
+  assert.equal(
+    sources.wikiAllUrl,
+    "https://wikiall.example.test/qaas/",
+  );
+  assert.equal(sources.builtInUrl, BUILT_IN_QAAS_DOCS_URL);
 
   const docsAttestation =
-    await attestDocumentationSourceConfiguration(legacyOverrides);
+    await attestDocumentationSourceConfiguration(configuredEnvironment);
   assert.deepEqual(docsAttestation.builtInEndpoints.docs, docsEndpoint);
   assert.equal(
     docsAttestation.builtInEndpointDigests.docs,
     canonicalDigest(docsEndpoint),
   );
+  assert.deepEqual(docsAttestation.resolutionOrder, [
+    "wikiall-mcp",
+    "helm-http",
+    "wikiall-http",
+    "built-in-public",
+  ]);
+  assert.equal(
+    docsAttestation.helm.effective.urlDigest,
+    sha256("https://helm-docs.example.test/qaas/"),
+  );
+  assert.equal(
+    docsAttestation.wikiAll.effective.urlDigest,
+    sha256("https://wikiall.example.test/qaas/"),
+  );
 
   const artifactoryAttestation =
     attestConfiguredSourceConfiguration({
       source: "artifactory",
-      env: legacyOverrides,
+      env: configuredEnvironment,
+      projectBaseUrl: "https://artifactory.example.test/qaas/",
+      credentialEnv: "ARTIFACTORY_TOKEN",
       allowLegacyEnvironment: false,
     });
   assert.deepEqual(artifactoryAttestation.configurationNames, []);
-  assert.deepEqual(
-    artifactoryAttestation.endpoint,
-    artifactoryEndpoint,
-  );
+  assert.equal(artifactoryAttestation.endpoint.kind, "reviewed-project-input");
   assert.equal(
-    artifactoryAttestation.endpointDigest,
-    canonicalDigest(artifactoryEndpoint),
+    artifactoryAttestation.endpoint.urlDigest,
+    sha256("https://artifactory.example.test/qaas/"),
   );
   assert.equal(
     artifactoryAttestation.selectedCredentialEnvironmentName,
-    null,
+    "ARTIFACTORY_TOKEN",
+  );
+});
+
+test("explicit air-gap mode disables public documentation fallback", async () => {
+  const env = { QAAS_DOCS_AIRGAP: "true" };
+  const sources = resolveDocumentationSources({ env });
+  assert.equal(sources.airgap.enabled, true);
+  assert.equal(sources.builtInUrl, null);
+  assert.deepEqual(sources.httpSources, []);
+  assert.deepEqual(sources.resolutionOrder, [
+    "wikiall-mcp",
+    "helm-http",
+    "wikiall-http",
+  ]);
+
+  const attestation = await attestDocumentationSourceConfiguration(env);
+  assert.equal(attestation.airgap.enabled, true);
+  assert.equal(attestation.selectedSourceDigests["built-in-public"], null);
+  assert.deepEqual(attestation.resolutionOrder, sources.resolutionOrder);
+
+  assert.throws(
+    () =>
+      resolveDocumentationSources({
+        env: { QAAS_DOCS_AIRGAP: "sometimes" },
+      }),
+    /QAAS_DOCS_AIRGAP/u,
+  );
+});
+
+test("documentation selectors reject unsafe URLs and bind deprecated aliases", async () => {
+  const aliases = {
+    QAAS_DOCS_PRIMARY_URL: "https://helm-legacy.example.test/qaas/",
+    QAAS_DOCS_SECONDARY_URL: "https://wikiall-legacy.example.test/qaas/",
+  };
+  const sources = resolveDocumentationSources({ env: aliases });
+  assert.equal(
+    sources.helmUrl,
+    "https://helm-legacy.example.test/qaas/",
+  );
+  assert.equal(
+    sources.wikiAllUrl,
+    "https://wikiall-legacy.example.test/qaas/",
+  );
+  const attestation = await attestDocumentationSourceConfiguration(aliases);
+  assert.equal(attestation.helm.deprecatedAlias.selected, true);
+  assert.equal(attestation.wikiAll.deprecatedAlias.selected, true);
+  assert.equal(
+    attestation.selectedSourceDigests["helm-http"],
+    sha256(sources.helmUrl),
+  );
+  assert.equal(
+    resolveDocumentationSources({
+      env: {
+        QAAS_DOCS_HELM_URL: "https://same.example.test/qaas/",
+        QAAS_DOCS_PRIMARY_URL: "https://same.example.test/qaas/",
+      },
+    }).helmUrl,
+    "https://same.example.test/qaas/",
+  );
+
+  assert.throws(
+    () =>
+      resolveDocumentationSources({
+        env: {
+          QAAS_DOCS_HELM_URL: "https://canonical.example.test/qaas/",
+          QAAS_DOCS_PRIMARY_URL: "https://different.example.test/qaas/",
+        },
+      }),
+    /conflicts with deprecated/u,
+  );
+  for (const unsafe of [
+    "not-a-url",
+    "file:///approved/docs",
+    ["https://user", "password@docs.example.test/"].join(":"),
+    "https://docs.example.test/#fragment",
+    "https://docs.example.test/?token=secret",
+  ]) {
+    assert.throws(
+      () =>
+        resolveDocumentationSources({
+          env: { QAAS_DOCS_HELM_URL: unsafe },
+        }),
+      /QAAS_DOCS_HELM_URL/u,
+    );
+  }
+  assert.throws(
+    () =>
+      resolveDocumentationSources({
+        env: {
+          QAAS_DOCS_MCP_URL:
+            ["https://user", "password@wikiall.example.test/mcp"].join(":"),
+        },
+      }),
+    /QAAS_DOCS_MCP_URL/u,
+  );
+  assert.throws(
+    () =>
+      resolveDocumentationSources({
+        env: {
+          QAAS_DOCS_MCP_CREDENTIAL_ENV: "WIKIALL_DOCS_TOKEN",
+        },
+    }),
+    /requires QAAS_DOCS_MCP_URL/u,
+  );
+  assert.throws(
+    () =>
+      resolveDocumentationSources({
+        env: {
+          QAAS_DOCS_MCP_URL: "http://wikiall.example.test/mcp",
+          QAAS_DOCS_MCP_CREDENTIAL_ENV: "WIKIALL_DOCS_TOKEN",
+        },
+      }),
+    /require HTTPS or an explicit loopback/u,
   );
 });
 
@@ -158,17 +289,19 @@ test("project source reads use reviewed direct inputs without URL preconfigurati
     ),
     /CLAUDE_PLUGIN_DATA is required/u,
   );
-  await assert.rejects(
-    resolveSourceReadRequest({
-      args: {
-        source: "artifactory",
-        "base-url": baseUrl,
-        "relative-url": "catalog/item",
-      },
-      env: {},
-      projectRoot: repositoryRoot,
-    }),
-    /accepted only/u,
+  const artifactory = await resolveSourceReadRequest({
+    args: {
+      source: "artifactory",
+      "base-url": baseUrl,
+      "relative-url": "catalog/item",
+    },
+    env: {},
+    projectRoot: repositoryRoot,
+  });
+  assert.equal(artifactory.requiresExactApproval, true);
+  assert.equal(
+    artifactory.description.baseUrl,
+    baseUrl,
   );
   await assert.rejects(
     resolveSourceReadRequest({
@@ -245,10 +378,8 @@ test("explicit endpoint reads are capped at 16 KiB", async () => {
   let requestedUrl = null;
   const small = await readConfiguredSource({
     source: "artifactory",
+    projectBaseUrl: "https://artifactory.example.test/qaas/",
     relativeUrl: "api/system/ping",
-    env: {
-      QAAS_ARTIFACTORY_URL: "https://ignored.example.test/",
-    },
     allowLegacyEnvironment: false,
     fetchImpl: async (url) => {
       requestedUrl = url.toString();
@@ -257,13 +388,14 @@ test("explicit endpoint reads are capped at 16 KiB", async () => {
   });
   assert.equal(
     requestedUrl,
-    "https://jfrog.com/artifactory/api/system/ping",
+    "https://artifactory.example.test/qaas/api/system/ping",
   );
   assert.equal(small.excerpt, "pong");
 
   await assert.rejects(
     readConfiguredSource({
       source: "artifactory",
+      projectBaseUrl: "https://artifactory.example.test/qaas/",
       relativeUrl: "api/system/ping",
       outputLimitBytes: 64 * 1024,
       allowLegacyEnvironment: false,
@@ -298,7 +430,7 @@ test("documentation reads remain explicit and capped at 16 KiB", async (t) => {
       },
       outputLimitBytes: 64 * 1024,
     }),
-    /documentation sources were unavailable/u,
+    /Documentation response exceeds the configured output bound/u,
   );
   assert.equal(requests, 1);
 });
@@ -317,11 +449,15 @@ test(
     try {
       resolveDocumentationSources({ env: {} });
       await attestDocumentationSourceConfiguration({});
-      attestConfiguredSourceConfiguration({
-        source: "artifactory",
-        env: {},
-        allowLegacyEnvironment: false,
-      });
+      assert.throws(
+        () =>
+          attestConfiguredSourceConfiguration({
+            source: "artifactory",
+            env: {},
+            allowLegacyEnvironment: false,
+          }),
+        /exact reviewed --base-url is required/u,
+      );
 
       const event = {
         hook_event_name: "PreToolUse",
@@ -331,7 +467,9 @@ test(
         tool_input: {
           command:
             'node "${CLAUDE_PLUGIN_ROOT}/scripts/source-read.mjs" ' +
-            "--source artifactory --relative-url api/system/ping",
+            "--source artifactory " +
+            "--base-url https://artifactory.example.test/qaas/ " +
+            "--relative-url api/system/ping",
         },
       };
       const classification = await classifyToolCall(
@@ -353,11 +491,11 @@ test(
       );
       assert.equal(
         classification.sourceProvenance.endpointConfiguration.endpoint.url,
-        BUILT_IN_QAAS_ARTIFACTORY_URL,
+        undefined,
       );
       assert.equal(
-        classification.sourceProvenance.endpointConfiguration.endpointDigest,
-        canonicalDigest(builtInEndpoint("artifactory")),
+        classification.sourceProvenance.endpointConfiguration.endpoint.kind,
+        "reviewed-project-input",
       );
       assert.match(
         classification.sourceProvenance.reviewedInputDigest,
@@ -380,6 +518,13 @@ test(
         pluginVersion: "0.1.0",
       });
       assert.equal(typeof doctor.ok, "boolean");
+      assert.equal(doctor.documentationSources.configuration.valid, true);
+      assert.deepEqual(doctor.documentationSources.resolutionOrder, [
+        "wikiall-mcp",
+        "helm-http",
+        "wikiall-http",
+        "built-in-public",
+      ]);
       assert.equal(fetchCalls, 0);
     } finally {
       globalThis.fetch = originalFetch;
@@ -387,10 +532,11 @@ test(
   },
 );
 
-test("public setup guidance has no core URL or legacy source prompt", async () => {
+test("public setup guidance advertises supported selectors and reviewed source inputs", async () => {
   const relativeFiles = [
     "README.md",
     "docs/airgap-configuration.md",
+    "plugins/qaas/references/configuration/documentation-sources.md",
     "plugins/qaas/templates/project-context/.claude/qaas/integrations.md",
     "plugins/qaas/skills/upgrade-qaas-project/SKILL.md",
     "plugins/qaas/references/upgrades/version-proof.md",
@@ -402,7 +548,7 @@ test("public setup guidance has no core URL or legacy source prompt", async () =
     })),
   );
   const legacySelectors =
-    /QAAS_(?:DOCS_(?:PRIMARY|SECONDARY)_URL|ARTIFACTORY_URL|NUGET_FEED_URL|GITLAB_URL|MODULES_REPO_URL|COMMON_HOOKS_REPO_URL)/u;
+    /QAAS_(?:NUGET_FEED_URL|GITLAB_URL|MODULES_REPO_URL|COMMON_HOOKS_REPO_URL)/u;
   for (const document of documents) {
     assert.doesNotMatch(
       document.text,
@@ -410,6 +556,21 @@ test("public setup guidance has no core URL or legacy source prompt", async () =
       `${document.relative} advertises legacy URL setup`,
     );
   }
+  const combined = documents.map((document) => document.text).join("\n");
+  for (const selector of [
+    "QAAS_DOCS_HELM_URL",
+    "QAAS_DOCS_WIKIALL_URL",
+    "QAAS_DOCS_MCP_URL",
+    "QAAS_DOCS_MCP_CREDENTIAL_ENV",
+    "QAAS_DOCS_AIRGAP",
+    "QAAS_DOCS_ZIM_PATH",
+  ]) {
+    assert.match(combined, new RegExp(`\\b${selector}\\b`, "u"));
+  }
+  assert.match(
+    combined,
+    /QAAS_DOCS_PRIMARY_URL[\s\S]{0,160}deprecated|deprecated[\s\S]{0,160}QAAS_DOCS_PRIMARY_URL/iu,
+  );
 
   const lines = documents.flatMap((document) =>
     document.text
@@ -421,14 +582,17 @@ test("public setup guidance has no core URL or legacy source prompt", async () =
       /\b(?:ask|prompt|configure|provide|set|supply|enter|required?)\b/iu.test(
         line,
       ) &&
-      /(?:\b(?:docs?|documentation|artifactory)\b.{0,80}\burl\b|\burl\b.{0,80}\b(?:docs?|documentation|artifactory)\b)/iu.test(
+      /(?:\bartifactory\b.{0,80}\burl\b|\burl\b.{0,80}\bartifactory\b)/iu.test(
         line,
       ) &&
       !/\b(?:do not|never|no runtime|not an onboarding|will not)\b/iu.test(
         line,
       ),
   );
-  assert.deepEqual(positivePrompts, []);
+  assert.ok(positivePrompts.length > 0);
+  for (const prompt of positivePrompts) {
+    assert.match(prompt.line, /reviewed|one-use|--base-url/iu);
+  }
 
   const sourceRead = await readFile(
     path.join(pluginRoot, "scripts", "source-read.mjs"),
@@ -449,7 +613,7 @@ test("public setup guidance has no core URL or legacy source prompt", async () =
   assert.match(sourceRead, /allowLegacyEnvironment:\s*false/u);
   assert.match(
     sourceReadRequest,
-    /"gitlab",\s*"modules",\s*"common-hooks"/u,
+    /"gitlab",\s*"artifactory",\s*"modules",\s*"common-hooks"/u,
   );
   assert.match(sourceRead, /activeSession\(context, args\["session-handle"\]\)/u);
   assert.match(sourceRead, /consumeExactSourceReadApproval/u);

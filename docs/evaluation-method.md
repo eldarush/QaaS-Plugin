@@ -72,8 +72,9 @@ The challenge corpus includes:
 - Custom hook reuse/authoring and unsupported-capability refusal.
 - Module/Common Hooks provenance.
 - Package upgrade planning.
-- Static build/template verification.
-- Run approval, long-run/retry review, and runtime diagnosis.
+- Exact restore/build/template user-run handoffs and bounded diagnostic import.
+- Execution approval, long-run/retry review, exact user-run handoff, and
+  imported-evidence diagnosis.
 - Allure/ReportPortal parsing and optional telemetry queries through a distinct
   one-use query-plan approval, including unproven-connector and direct-fallback
   denial.

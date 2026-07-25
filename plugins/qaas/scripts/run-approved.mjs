@@ -20,13 +20,23 @@ import {
   createEvidenceEvent,
   recordEvidence,
 } from "./lib/evidence.mjs";
+import {
+  AUTOMATED_EXECUTION_POLICY,
+  assertTrustedRunnerAvailable,
+  manualEvidenceRelativePath,
+  manualEvidenceTemplate,
+  readManualExecutionEvidence,
+  validateManualExecutionEvidence,
+} from "./lib/execution-policy.mjs";
 import { mirrorProjectState } from "./lib/project-state-mirror.mjs";
 import {
   computePackageSnapshot,
   writePackageSnapshot,
 } from "./lib/package-snapshot.mjs";
-import { runProcess } from "./lib/process-runner.mjs";
-import { commitTransition } from "./lib/state.mjs";
+import {
+  commitCheckpoint,
+  commitTransition,
+} from "./lib/state.mjs";
 import {
   captureProcessFingerprint,
   captureVerificationArtifacts,
@@ -39,6 +49,24 @@ import {
 } from "./workflow-authority.mjs";
 
 const PLAN_ACTIONS = new Set(["restore", "build", "template"]);
+
+function staticVerificationExclusions(outputDirectories, checks) {
+  const normalize = (value) =>
+    String(value).replaceAll("\\", "/").replace(/^\.\/+/u, "").replace(/\/+$/u, "");
+  const artifactPaths = (checks ?? [])
+    .map((check) => normalize(check?.path ?? ""))
+    .filter(Boolean);
+  return [...new Set((outputDirectories ?? []).map(normalize))]
+    .filter(Boolean)
+    .filter(
+      (output) =>
+        !artifactPaths.some(
+          (artifact) =>
+            artifact === output || artifact.startsWith(`${output}/`),
+        ),
+    )
+    .sort();
+}
 
 export function assertAirGapPackageSources(snapshot) {
   const unsafe = (snapshot?.packageSources ?? []).filter((source) => {
@@ -155,6 +183,753 @@ function commandCwd(projectRoot, command) {
   return cwd;
 }
 
+function reviewedCommandDisplay(program, args) {
+  const quotePowerShell = (value) =>
+    `'${String(value).replaceAll("'", "''")}'`;
+  const quotePosix = (value) =>
+    `'${String(value).replaceAll("'", "'\\''")}'`;
+  if (process.platform === "win32") {
+    return `& ${[program, ...args].map(quotePowerShell).join(" ")}`;
+  }
+  return [program, ...args].map(quotePosix).join(" ");
+}
+
+function manualCommandDescriptors(projectRoot, review, entries) {
+  return entries.map(({ action, commandIndex, command }) => {
+    const binding = review.processBindings.find(
+      (entry) =>
+        entry.action === action &&
+        entry.commandIndex === commandIndex,
+    );
+    if (!binding) {
+      throw new Error(
+        `Signed review lacks ${action} command binding ${commandIndex}`,
+      );
+    }
+    const cwd = commandCwd(projectRoot, command);
+    return {
+      action,
+      commandIndex,
+      resolvedProgram: binding.resolvedProgram,
+      executableDigest: binding.executableDigest,
+      processSpecDigest: binding.processSpecDigest,
+      args: [...command.args],
+      cwd,
+      environmentVariableNames: [...command.envNames],
+      timeoutMs: command.timeoutMs,
+      outputLimitBytes: command.outputLimitBytes,
+      shell: false,
+      display: reviewedCommandDisplay(binding.resolvedProgram, command.args),
+    };
+  });
+}
+
+async function approvedManualAction(
+  context,
+  active,
+  action,
+  { recheckFingerprint = true } = {},
+) {
+  if (PLAN_ACTIONS.has(action)) {
+    const allowedPhases = {
+      restore: new Set(["IMPLEMENTING", "REPAIRING"]),
+      build: new Set(["IMPLEMENTING", "REPAIRING"]),
+      template: new Set(["BUILD_VERIFIED"]),
+    };
+    if (!allowedPhases[action].has(active.state.phase)) {
+      throw new Error(`${action} is not legal from ${active.state.phase}`);
+    }
+    const artifact = await context.authority.readSigned("artifacts/plan.json");
+    const plan = artifact.payload.document;
+    const review = await exactReview(context, "plan", artifact);
+    await exactApproval(context, active, "plan", review.digest);
+    if (recheckFingerprint) {
+      await exactWorkingFingerprint(context, active.state, plan);
+    }
+    const safetyScan = await scanProjectExecutableInputs({
+      projectRoot: context.projectRoot,
+      additionalPaths: plan.generatedOutputs,
+    });
+    if (!safetyScan.safe) {
+      throw new Error(
+        `Reviewed user-run inputs contain known destructive behavior: ${safetyScan.findings
+          .map((entry) => `${entry.identifier}:${entry.reason}`)
+          .join(", ")}`,
+      );
+    }
+    if (action === "restore") {
+      assertAirGapPackageSources(
+        await computePackageSnapshot({
+          projectRoot: context.projectRoot,
+          env: context.env,
+        }),
+      );
+    }
+    const commands = plan.commands[action] ?? [];
+    if (action === "restore" && commands.length === 0) {
+      return {
+        skipped: true,
+        action,
+        reason: "No restore commands were approved",
+      };
+    }
+    if (commands.length === 0) {
+      throw new Error(`Approved plan has no ${action} commands`);
+    }
+    return {
+      action,
+      actionClass: action,
+      artifactDigest: artifact.payload.digest,
+      reviewDigest: review.digest,
+      commands: manualCommandDescriptors(
+        context.projectRoot,
+        review,
+        commands.map((command, commandIndex) => ({
+          action,
+          commandIndex,
+          command,
+        })),
+      ),
+      maximumAttempts: commands.length,
+      outputDirectories: [...plan.generatedOutputs],
+      verificationChecks: plan.verification[action],
+      warningPolicy: plan.warningPolicy,
+      requireFreshArtifacts: action === "template",
+      protectedPaths: [
+        ...Object.values(plan.paths ?? {}).flat(),
+        ...(plan.changes ?? []).map((change) => change.path),
+        ".claude",
+        ".git",
+      ],
+      fingerprintStage: active.state.fingerprints?.expectedWorkingFingerprint
+        ? "expectedWorkingFingerprint"
+        : "taskBaseline",
+    };
+  }
+
+  if (active.state.phase !== "EXECUTION_APPROVED") {
+    throw new Error(`${action} requires EXECUTION_APPROVED`);
+  }
+  const plan = await context.authority.readSigned("artifacts/plan.json");
+  const executionArtifact = await context.authority.readSigned(
+    "artifacts/execution.json",
+  );
+  const execution = executionArtifact.payload.document;
+  const executionReview = await exactReview(
+    context,
+    "execution",
+    executionArtifact,
+  );
+  await exactApproval(
+    context,
+    active,
+    "execution",
+    executionReview.digest,
+  );
+  const staticRecord = await context.authority.readSigned(
+    "fingerprints/staticVerificationFingerprint.json",
+  );
+  if (
+    !safeEqualHex(
+      active.state.fingerprints?.staticVerificationFingerprint,
+      staticRecord.payload.digest,
+    ) ||
+    !safeEqualHex(execution.staticVerificationDigest, staticRecord.payload.digest)
+  ) {
+    throw new Error("Execution plan static verification fingerprint is stale");
+  }
+  if (recheckFingerprint) {
+    await exactStoredFingerprint(
+      context,
+      active.state,
+      "staticVerificationFingerprint",
+      plan.payload.document.generatedOutputs,
+    );
+  }
+  if (action === "test-run") {
+    const safetyScan = await scanProjectExecutableInputs({
+      projectRoot: context.projectRoot,
+      additionalPaths: [
+        ...(plan.payload.document.generatedOutputs ?? []),
+        ...(execution.outputPaths ?? []),
+      ],
+    });
+    if (!safetyScan.safe) {
+      throw new Error(
+        `Reviewed user-run inputs contain known destructive behavior: ${safetyScan.findings
+          .map((entry) => `${entry.identifier}:${entry.reason}`)
+          .join(", ")}`,
+      );
+    }
+    return {
+      action,
+      actionClass: "test-run",
+      artifactDigest: executionArtifact.payload.digest,
+      reviewDigest: executionReview.digest,
+      commands: manualCommandDescriptors(
+        context.projectRoot,
+        executionReview,
+        [{
+          action: "test-run",
+          commandIndex: 0,
+          command: execution.command,
+        }],
+      ),
+      maximumAttempts: execution.repeatCount + execution.retryBudget,
+      outputDirectories: [...execution.outputPaths],
+      verificationChecks: execution.successChecks,
+      warningPolicy: execution.warningPolicy,
+      requireFreshArtifacts: true,
+      protectedPaths: [
+        ...Object.values(plan.payload.document.paths ?? {}).flat(),
+        ...(plan.payload.document.changes ?? []).map((change) => change.path),
+        ".claude",
+        ".git",
+      ],
+      fingerprintStage: "staticVerificationFingerprint",
+    };
+  }
+
+  const mutationArtifact = await context.authority.readSigned(
+    "artifacts/mutation.json",
+  );
+  const mutation = mutationArtifact.payload.document;
+  const mutationReview = await exactReview(
+    context,
+    "mutation",
+    mutationArtifact,
+  );
+  await exactApproval(
+    context,
+    active,
+    "mutation",
+    mutationReview.digest,
+  );
+  if (
+    !safeEqualHex(
+      mutation.executionPlanDigest,
+      executionArtifact.payload.digest,
+    )
+  ) {
+    throw new Error("Mutation no longer binds the approved execution plan");
+  }
+  const safetyScan = await scanProjectExecutableInputs({
+    projectRoot: context.projectRoot,
+    additionalPaths: [
+      ...(plan.payload.document.generatedOutputs ?? []),
+      ...(mutation.tool.outputDirectories ?? []),
+    ],
+  });
+  if (!safetyScan.safe) {
+    throw new Error(
+      `Reviewed user-run inputs contain known destructive behavior: ${safetyScan.findings
+        .map((entry) => `${entry.identifier}:${entry.reason}`)
+        .join(", ")}`,
+    );
+  }
+  return {
+    action,
+    actionClass: "infrastructure-mutation",
+    artifactDigest: mutationArtifact.payload.digest,
+    reviewDigest: mutationReview.digest,
+    commands: manualCommandDescriptors(
+      context.projectRoot,
+      mutationReview,
+      [{
+        action: "infrastructure-mutation",
+        commandIndex: 0,
+        command: mutation.tool.command,
+      }],
+    ),
+    maximumAttempts: 1,
+    outputDirectories: [...mutation.tool.outputDirectories],
+    verificationChecks: mutation.successChecks,
+    warningPolicy: mutation.warningPolicy,
+    requireFreshArtifacts: true,
+    protectedPaths: [
+      ...Object.values(plan.payload.document.paths ?? {}).flat(),
+      ...(plan.payload.document.changes ?? []).map((change) => change.path),
+      ".claude",
+      ".git",
+    ],
+    fingerprintStage: "staticVerificationFingerprint",
+  };
+}
+
+function manualHandoffRecordPath(action, reviewDigest) {
+  return `manual-execution/${reviewDigest}-${action}.json`;
+}
+
+function publicManualHandoff(payload) {
+  return {
+    action: payload.action,
+    successful: false,
+    phase: payload.phase,
+    status: "user-run-required",
+    automatedExecution: false,
+    trustedRunner: {
+      required: true,
+      available: false,
+      mechanism: null,
+      unsafeOverrideAllowed: false,
+    },
+    reason: AUTOMATED_EXECUTION_POLICY.reason,
+    exactReviewedCommands: payload.commands,
+    evidenceImport: {
+      relativePath: payload.evidenceRelativePath,
+      maximumBytes: 16 * 1024,
+      command:
+        `node "\${CLAUDE_PLUGIN_ROOT}/scripts/run-approved.mjs" ` +
+        `--session-handle <handle> --action ${payload.action} --import-evidence`,
+      template: payload.evidenceTemplate,
+      authority:
+        "User-supplied evidence is bounded and diagnostic; it is not an OS-confined runner attestation.",
+    },
+  };
+}
+
+async function prepareManualHandoff(context, active, action) {
+  const descriptor = await approvedManualAction(context, active, action);
+  if (descriptor.skipped) return descriptor;
+  const relativePath = manualHandoffRecordPath(
+    action,
+    descriptor.reviewDigest,
+  );
+  const existing = await context.authority.readSigned(relativePath, {
+    required: false,
+  });
+  if (existing) {
+    const payload = existing.payload;
+    if (
+      payload.taskId !== active.state.taskId ||
+      payload.sessionId !== active.attestation.sessionId ||
+      payload.leaseId !== active.lease.leaseId ||
+      payload.stateSequence !== active.state.sequence ||
+      !safeEqualHex(payload.reviewDigest, descriptor.reviewDigest)
+    ) {
+      throw new Error(
+        "A stale manual-execution handoff cannot be replaced or widened",
+      );
+    }
+    return publicManualHandoff(payload);
+  }
+  const evidenceRelativePath = manualEvidenceRelativePath(
+    descriptor.reviewDigest,
+    action,
+  );
+  const beforeFingerprint = await captureProcessFingerprint(
+    context.projectRoot,
+    descriptor.fingerprintStage,
+  );
+  const priorArtifactStates = await captureVerificationArtifacts(
+    context.projectRoot,
+    descriptor.verificationChecks,
+  );
+  const evidenceTemplate = manualEvidenceTemplate({
+    action,
+    reviewDigest: descriptor.reviewDigest,
+    commands: descriptor.commands,
+  });
+  const payload = {
+    schemaVersion: "1.0",
+    projectId: context.authority.projectId,
+    taskId: active.state.taskId,
+    sessionId: active.attestation.sessionId,
+    leaseId: active.lease.leaseId,
+    stateSequence: active.state.sequence,
+    phase: active.state.phase,
+    action,
+    actionClass: descriptor.actionClass,
+    artifactDigest: descriptor.artifactDigest,
+    reviewDigest: descriptor.reviewDigest,
+    commands: descriptor.commands,
+    maximumAttempts: descriptor.maximumAttempts,
+    outputDirectories: descriptor.outputDirectories,
+    verificationChecks: descriptor.verificationChecks,
+    warningPolicy: descriptor.warningPolicy,
+    requireFreshArtifacts: descriptor.requireFreshArtifacts,
+    priorArtifactStates,
+    protectedPaths: descriptor.protectedPaths,
+    fingerprintStage: descriptor.fingerprintStage,
+    beforeFingerprint,
+    evidenceRelativePath,
+    evidenceTemplate,
+    createdAt: new Date().toISOString(),
+    sequence: 0,
+  };
+  await context.authority.writeSigned(relativePath, payload, {
+    expectedSequence: -1,
+  });
+  return publicManualHandoff(payload);
+}
+
+async function importManualEvidence(context, active, action) {
+  const descriptor = await approvedManualAction(
+    context,
+    active,
+    action,
+    { recheckFingerprint: false },
+  );
+  if (descriptor.skipped) return descriptor;
+  const handoff = (
+    await context.authority.readSigned(
+      manualHandoffRecordPath(action, descriptor.reviewDigest),
+    )
+  ).payload;
+  if (
+    handoff.taskId !== active.state.taskId ||
+    handoff.sessionId !== active.attestation.sessionId ||
+    handoff.leaseId !== active.lease.leaseId ||
+    handoff.stateSequence !== active.state.sequence ||
+    handoff.phase !== active.state.phase ||
+    !safeEqualHex(handoff.reviewDigest, descriptor.reviewDigest)
+  ) {
+    throw new Error("Manual execution evidence does not match the current handoff");
+  }
+  const document = await readManualExecutionEvidence(
+    context.projectRoot,
+    handoff.evidenceRelativePath,
+  );
+  const imported = validateManualExecutionEvidence(document, {
+    action,
+    reviewDigest: handoff.reviewDigest,
+    commands: handoff.commands,
+    maximumAttempts: handoff.maximumAttempts,
+  });
+  const integrity = await verifyProcessChanges({
+    projectRoot: context.projectRoot,
+    before: handoff.beforeFingerprint,
+    allowedOutputDirectories: [
+      ...handoff.outputDirectories,
+      ".qaas-user-evidence",
+    ],
+    protectedPaths: handoff.protectedPaths,
+    stage: handoff.fingerprintStage,
+  });
+  const verification = await evaluateVerification({
+    projectRoot: context.projectRoot,
+    results: imported.results,
+    checks: handoff.verificationChecks,
+    warningPolicy: handoff.warningPolicy,
+    changedPaths: integrity.changed,
+    requireFreshArtifacts: handoff.requireFreshArtifacts,
+    priorArtifactStates: handoff.priorArtifactStates,
+  });
+  const successful =
+    integrity.ok &&
+    verification.passed &&
+    imported.results.every((entry) => entry.exitCode === 0);
+  const outputDigest = sha256(
+    imported.results.map((entry) => ({
+      commandIndex: entry.commandIndex,
+      attempt: entry.attempt,
+      processSpecDigest: entry.processSpecDigest,
+      exitCode: entry.exitCode,
+      startedAt: entry.startedAt,
+      finishedAt: entry.finishedAt,
+      stdoutDigest: sha256(entry.stdout),
+      stderrDigest: sha256(entry.stderr),
+    })),
+  );
+  const last = imported.results.at(-1);
+  const event = createEvidenceEvent({
+    projectId: context.authority.projectId,
+    taskId: active.state.taskId,
+    type: "user-run-process",
+    actionClass: descriptor.actionClass,
+    status: successful ? "success" : "failure",
+    tool: "manual-evidence-import",
+    inputDigest: handoff.reviewDigest,
+    outputDigest,
+    exitCode: last.exitCode,
+    paths: [handoff.evidenceRelativePath],
+    excerpt: (last.stderr || last.stdout).slice(0, 2048),
+    details: {
+      automatedExecution: false,
+      trustedRunnerAttested: false,
+      userAttested: true,
+      processCount: imported.results.length,
+      processSpecificationDigests: imported.results.map(
+        (entry) => entry.processSpecDigest,
+      ),
+      integrity,
+      verification,
+    },
+  });
+  await recordEvidence(context.authority, event, {
+    projectRoot: context.projectRoot,
+    mirrorPath: path.join(
+      context.projectRoot,
+      ".claude",
+      "qaas",
+      "state",
+      "tasks",
+      active.state.taskId,
+      "evidence.jsonl",
+    ),
+  });
+  let correlationFingerprint = null;
+  let correlationPackageSnapshot = null;
+  if (action === "test-run") {
+    const [planRecord, executionRecord, mutationRecord] = await Promise.all([
+      context.authority.readSigned("artifacts/plan.json"),
+      context.authority.readSigned("artifacts/execution.json"),
+      context.authority.readSigned("artifacts/mutation.json", {
+        required: false,
+      }),
+    ]);
+    const planDocument = planRecord.payload.document;
+    const executionDocument = executionRecord.payload.document;
+    const mutationOutputs =
+      mutationRecord?.payload.document?.taskId === active.state.taskId &&
+      safeEqualHex(
+        mutationRecord?.payload.document?.executionPlanDigest,
+        executionRecord.payload.digest,
+      )
+        ? mutationRecord.payload.document.tool?.outputDirectories ?? []
+        : [];
+    correlationPackageSnapshot = await writePackageSnapshot(
+      context.authority,
+      "packages/user-run-evidence-baseline.json",
+      await computePackageSnapshot({
+        projectRoot: context.projectRoot,
+        env: context.env,
+      }),
+    );
+    correlationFingerprint = await createFingerprint({
+      projectRoot: context.projectRoot,
+      stage: "onboardingFingerprint",
+      exclusions: [
+        ...(planDocument.generatedOutputs ?? []),
+        ...(executionDocument.outputPaths ?? []),
+        ...mutationOutputs,
+        ".qaas-user-evidence",
+      ],
+      packageSnapshot: correlationPackageSnapshot,
+      contextDigest: active.state.contextDigest ?? null,
+    });
+    const priorCorrelation = await context.authority.readSigned(
+      "fingerprints/onboardingFingerprint.json",
+      { required: false },
+    );
+    await context.authority.writeSigned(
+      "fingerprints/onboardingFingerprint.json",
+      correlationFingerprint,
+      { expectedDigest: priorCorrelation?.digest ?? null },
+    );
+  }
+  let state = active.state;
+  if (
+    state.phase === "REPAIRING" &&
+    ["restore", "build"].includes(action)
+  ) {
+    state = await commitTransition(
+      context.authority,
+      state,
+      "IMPLEMENTING",
+      {
+        reason:
+          "Returned repaired exact target to user-run evidence correlation",
+        patch: {
+          nextLegalAction: "Classify bounded user-run evidence",
+        },
+      },
+    );
+  }
+  if (
+    state.phase === "EXECUTION_APPROVED" &&
+    !(action === "mutation" && successful)
+  ) {
+    state = await commitTransition(
+      context.authority,
+      state,
+      "EXECUTING",
+      {
+        reason:
+          "Entered correlation for user-run evidence; the plugin launched no process",
+        patch: {
+          nextLegalAction: "Classify bounded user-run evidence",
+        },
+      },
+    );
+  }
+  if (state.phase === "EXECUTING" || !successful) {
+    state = await commitTransition(
+      context.authority,
+      state,
+      "DIAGNOSING",
+      {
+        reason:
+          "Imported bounded user-run evidence without trusted-runner attestation",
+        patch: {
+          blocker: successful
+            ? "Automated verification is unavailable without an OS-confined trusted runner"
+            : "User-run evidence reports failure or out-of-scope project changes",
+          fingerprints: correlationFingerprint
+            ? {
+                ...state.fingerprints,
+                onboardingFingerprint: correlationFingerprint.digest,
+              }
+            : state.fingerprints,
+          packageSnapshotDigest:
+            correlationPackageSnapshot?.digest ??
+            state.packageSnapshotDigest,
+          nextLegalAction:
+            "Diagnose the imported evidence; do not claim automated verification",
+        },
+      },
+    );
+  } else if (action === "template") {
+    const renderedSafety = await scanProjectExecutableInputs({
+      projectRoot: context.projectRoot,
+      additionalPaths: handoff.outputDirectories,
+    });
+    if (!renderedSafety.safe) {
+      throw new Error(
+        `User-rendered template contains destructive behavior: ${renderedSafety.findings
+          .map((entry) => `${entry.identifier}:${entry.reason}`)
+          .join(", ")}`,
+      );
+    }
+    const packageSnapshot = await writePackageSnapshot(
+      context.authority,
+      "packages/static-verification.json",
+      await computePackageSnapshot({
+        projectRoot: context.projectRoot,
+        env: context.env,
+      }),
+    );
+    const staticFingerprint = await createFingerprint({
+      projectRoot: context.projectRoot,
+      stage: "staticVerificationFingerprint",
+      exclusions: staticVerificationExclusions(
+        handoff.outputDirectories,
+        handoff.verificationChecks,
+      ),
+      packageSnapshot,
+      contextDigest: state.contextDigest ?? null,
+      renderedTemplate: {
+        planDigest: handoff.reviewDigest,
+        commandSpecificationDigests: imported.results.map(
+          (entry) => entry.processSpecDigest,
+        ),
+        outputDigest,
+        evidenceAuthority: "user-attested",
+      },
+    });
+    const oldFingerprint = await context.authority.readSigned(
+      "fingerprints/staticVerificationFingerprint.json",
+      { required: false },
+    );
+    await context.authority.writeSigned(
+      "fingerprints/staticVerificationFingerprint.json",
+      staticFingerprint,
+      { expectedDigest: oldFingerprint?.digest ?? null },
+    );
+    state = await commitTransition(
+      context.authority,
+      state,
+      "TEMPLATE_VERIFIED",
+      {
+        reason:
+          "Bound successful user-attested template evidence to an exact static fingerprint",
+        patch: {
+          fingerprints: {
+            ...state.fingerprints,
+            staticVerificationFingerprint: staticFingerprint.digest,
+          },
+        },
+      },
+    );
+    state = await commitTransition(
+      context.authority,
+      state,
+      "IMPLEMENTED_NOT_RUN",
+      {
+        reason:
+          "Imported successful user-attested template evidence; no plugin process was launched",
+        patch: {
+          completedWork: [
+            ...state.completedWork,
+            "user-run template evidence imported",
+          ],
+          blocker: null,
+          nextLegalAction:
+            "Prepare and review the exact execution plan before any test run",
+        },
+      },
+    );
+  } else if (action === "mutation") {
+    state = await commitCheckpoint(
+      context.authority,
+      state,
+      {
+        completedWork: [
+          ...state.completedWork,
+          "user-run infrastructure mutation evidence imported",
+        ],
+        nextLegalAction: "Prepare the exact reviewed test-run handoff",
+      },
+      {
+        reason:
+          "Imported successful bounded user-run infrastructure evidence",
+      },
+    );
+  } else if (action === "build") {
+    state = await commitTransition(
+      context.authority,
+      state,
+      "BUILD_VERIFIED",
+      {
+        reason:
+          "Imported successful user-attested build evidence; no plugin process was launched",
+        patch: {
+          completedWork: [
+            ...state.completedWork,
+            "user-run build evidence imported",
+          ],
+          nextLegalAction: "Prepare the exact reviewed template handoff",
+        },
+      },
+    );
+  } else {
+    state = await commitCheckpoint(
+      context.authority,
+      state,
+      {
+        completedWork: [
+          ...state.completedWork,
+          `user-run ${action} evidence imported`,
+        ],
+        nextLegalAction:
+          action === "restore"
+            ? "Prepare the exact reviewed build handoff"
+            : "Prepare the exact reviewed template handoff",
+      },
+      {
+        reason: `Imported bounded user-run ${action} evidence`,
+      },
+    );
+  }
+  await mirrorProjectState(
+    context.projectRoot,
+    state,
+    "Imported user-run evidence; no process was launched by the plugin",
+  );
+  return {
+    action,
+    successful,
+    phase: state.phase,
+    status: "user-run-evidence-imported",
+    automatedExecution: false,
+    trustedRunnerAttested: false,
+    evidenceDigest: event.digest,
+    integrity,
+    verification,
+    nextLegalAction: state.nextLegalAction,
+  };
+}
+
 async function runOne({
   context,
   approvalDigest,
@@ -169,49 +944,20 @@ async function runOne({
   fingerprintStage,
   executionTimeoutMs = null,
 }) {
-  const cwd = commandCwd(context.projectRoot, command);
-  const binding = review.processBindings.find(
-    (entry) =>
-      entry.action === action &&
-      entry.commandIndex === commandIndex,
+  void context;
+  void approvalDigest;
+  void approval;
+  void review;
+  void index;
+  void commandIndex;
+  void command;
+  void outputDirectories;
+  void protectedPaths;
+  void fingerprintStage;
+  void executionTimeoutMs;
+  assertTrustedRunnerAvailable(
+    action === "test-run" ? "test-run" : action,
   );
-  if (!binding) {
-    throw new Error(`Signed review lacks ${action} command binding ${commandIndex}`);
-  }
-  const before = await captureProcessFingerprint(
-    context.projectRoot,
-    fingerprintStage,
-  );
-  const result = await runProcess({
-    program: binding.resolvedProgram,
-    args: command.args,
-    cwd,
-    envNames: command.envNames,
-    timeoutMs: command.timeoutMs,
-    outputLimitBytes: command.outputLimitBytes,
-    outputDirectories,
-    scopeRoot: context.projectRoot,
-    environment: context.env,
-    executionTimeoutMs,
-    expectedSpecDigest: binding.processSpecDigest,
-    expectedScriptDigest: command.scriptDigest ?? null,
-    approvedExecutablePath: binding.resolvedProgram,
-    expectedExecutableDigest: binding.executableDigest,
-    actionClass: action === "test-run" ? "test-run" : action,
-    verifyAuthorization: async (specification) =>
-      safeEqualHex(approval.approvedDigest, approvalDigest) &&
-      safeEqualHex(specification.specDigest, binding.processSpecDigest) &&
-      specification.actionClass ===
-        (action === "test-run" ? "test-run" : action),
-  });
-  const integrity = await verifyProcessChanges({
-    projectRoot: context.projectRoot,
-    before,
-    allowedOutputDirectories: outputDirectories,
-    protectedPaths,
-    stage: fingerprintStage,
-  });
-  return { ...result, integrity };
 }
 
 function processResultSucceeded(result) {
@@ -497,7 +1243,10 @@ async function runPlanAction(context, active, action) {
     const staticFingerprint = await createFingerprint({
       projectRoot: context.projectRoot,
       stage: "staticVerificationFingerprint",
-      exclusions: plan.generatedOutputs,
+      exclusions: staticVerificationExclusions(
+        plan.generatedOutputs,
+        plan.verification.template,
+      ),
       packageSnapshot,
       contextDigest: state.contextDigest ?? null,
       renderedTemplate: {
@@ -1010,12 +1759,16 @@ export async function runApproved(
   }
   const context = await runtimeContext(env);
   const active = await activeSession(context, args["session-handle"]);
-  if (PLAN_ACTIONS.has(action)) {
-    return runPlanAction(context, active, action);
+  if (
+    args["import-evidence"] !== undefined &&
+    args["import-evidence"] !== true
+  ) {
+    throw new Error("--import-evidence is a flag and accepts no value");
   }
-  return action === "mutation"
-    ? runMutation(context, active)
-    : runExecution(context, active);
+  if (args["import-evidence"] === true) {
+    return importManualEvidence(context, active, action);
+  }
+  return prepareManualHandoff(context, active, action);
 }
 
 if (isDirectExecution(import.meta.url)) {

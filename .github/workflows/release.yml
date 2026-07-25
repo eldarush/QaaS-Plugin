@@ -1,0 +1,926 @@
+name: Publish release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing vX.Y.Z tag to publish
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: qaas-plugin-release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  CANONICAL_REPOSITORY: TheSmokeTeam/QaaS-Plugin
+  CANONICAL_SOURCE: https://github.com/TheSmokeTeam/QaaS-Plugin
+  DOCKER_IMAGE: docker.io/thesmoketeam/qaas-plugin-docs
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      commit: ${{ steps.version.outputs.commit }}
+      source-epoch: ${{ steps.version.outputs.source_epoch }}
+    steps:
+      - name: Require the canonical publication repository
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REPOSITORY}" = "${CANONICAL_REPOSITORY}"
+
+      - name: Check out exact release tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Configure Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+
+      - name: Configure Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Verify tag, version, and main ancestry
+        id: version
+        shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          version="$(node -p "JSON.parse(require('fs').readFileSync('version.json', 'utf8')).version")"
+          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+            tag="${GITHUB_REF_NAME}"
+          else
+            tag="${INPUT_TAG}"
+          fi
+          if [[ ! "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "version.json must contain a stable X.Y.Z version." >&2
+            exit 1
+          fi
+          if [[ "${tag}" != "v${version}" ]]; then
+            echo "Release tag ${tag} does not match version.json (${version})." >&2
+            exit 1
+          fi
+          tag_commit="$(git rev-list -n 1 "refs/tags/${tag}")"
+          checked_out_commit="$(git rev-parse HEAD)"
+          if [[ "${tag_commit}" != "${checked_out_commit}" ]]; then
+            echo "Release tag ${tag} is not bound to checked-out commit ${checked_out_commit}." >&2
+            exit 1
+          fi
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "${checked_out_commit}" origin/main; then
+            echo "Release commit ${checked_out_commit} is not reachable from origin/main." >&2
+            exit 1
+          fi
+          source_epoch="$(git show -s --format=%ct "${checked_out_commit}")"
+          if [[ ! "${source_epoch}" =~ ^[0-9]+$ ]]; then
+            echo "Release commit does not have a valid source epoch." >&2
+            exit 1
+          fi
+          {
+            echo "version=${version}"
+            echo "tag=${tag}"
+            echo "commit=${checked_out_commit}"
+            echo "source_epoch=${source_epoch}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Validate plugin and documentation
+        run: npm run check
+
+      - name: Build reproducible local release image
+        shell: bash
+        env:
+          SOURCE_EPOCH: ${{ steps.version.outputs.source_epoch }}
+        run: |
+          set -euo pipefail
+          build_archive="dist/qaas-plugin-docs-${{ steps.version.outputs.version }}-linux-amd64.build.tar"
+          docker buildx build \
+            --platform linux/amd64 \
+            --provenance=false \
+            --sbom=false \
+            --build-arg "SOURCE_DATE_EPOCH=${SOURCE_EPOCH}" \
+            --label "org.opencontainers.image.revision=${{ steps.version.outputs.commit }}" \
+            --output "type=docker,dest=${build_archive},rewrite-timestamp=true" \
+            --tag "${DOCKER_IMAGE}:${{ steps.version.outputs.version }}" \
+            docs-site
+          docker load --input "${build_archive}"
+
+      - name: Smoke-test air-gapped container contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          container_id="$(
+            docker run --detach --rm \
+              --network none \
+              --read-only \
+              --tmpfs /tmp:rw,noexec,nosuid,size=16m \
+              --cap-drop ALL \
+              --security-opt no-new-privileges \
+              --user 10001:10001 \
+              --env QAAS_PLUGIN_REPOSITORY_URL="${CANONICAL_SOURCE}" \
+              --env QAAS_DOCS_HELM_URL=https://qaas-docs.internal.example/ \
+              --env QAAS_DOCS_WIKIALL_URL=https://wikiall.internal.example/qaas/ \
+              "${DOCKER_IMAGE}:${{ steps.version.outputs.version }}"
+          )"
+          trap 'docker stop "${container_id}" >/dev/null' EXIT
+          ready=0
+          for _ in $(seq 1 30); do
+            if [[ "$(
+              docker inspect --format '{{.State.Health.Status}}' "${container_id}"
+            )" == "healthy" ]]; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "${ready}" -eq 1
+          docker exec "${container_id}" node -e "
+            fetch('http://127.0.0.1:8080/')
+              .then((response) => {
+                if (!response.ok) throw new Error('Documentation root is unavailable');
+                return response.text();
+              })
+              .then((page) => {
+                for (const value of [
+                  '${CANONICAL_SOURCE}',
+                  'https://qaas-docs.internal.example/',
+                  'https://wikiall.internal.example/qaas/',
+                ]) {
+                  if (!page.includes(value)) throw new Error('Missing runtime value: ' + value);
+                }
+              });
+          "
+
+      - name: Validate Kubernetes deployment template
+        shell: bash
+        run: |
+          docker run --rm \
+            --volume "${PWD}:/repo:ro" \
+            ghcr.io/yannh/kubeconform@sha256:faffaf43f95aa6425306e1ab8d6fcad72acb9049158f38e574c085ea1ec0f64e \
+            -strict -summary /repo/deploy/kubernetes/qaas-plugin-docs.yaml
+
+      - name: Package offline release inputs
+        shell: bash
+        env:
+          QAAS_PLUGIN_DOCS_IMAGE: ${{ env.DOCKER_IMAGE }}:${{ steps.version.outputs.version }}
+          QAAS_PLUGIN_DOCS_SOURCE_TAR: dist/qaas-plugin-docs-${{ steps.version.outputs.version }}-linux-amd64.build.tar
+          QAAS_PLUGIN_SOURCE_REVISION: ${{ steps.version.outputs.commit }}
+        run: |
+          set -euo pipefail
+          node tools/package-docs-image.mjs
+
+      - name: Upload verified release inputs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: qaas-plugin-release-build
+          if-no-files-found: error
+          retention-days: 1
+          path: |
+            dist/qaas-plugin-${{ steps.version.outputs.version }}.zip
+            dist/qaas-plugin-${{ steps.version.outputs.version }}.zip.sha256
+            dist/qaas-plugin-${{ steps.version.outputs.version }}.zip.manifest.json
+            dist/qaas-plugin-docs-${{ steps.version.outputs.version }}-linux-amd64.tar.gz
+            dist/qaas-plugin-docs-${{ steps.version.outputs.version }}-linux-amd64.tar.gz.sha256
+            dist/qaas-plugin-docs-${{ steps.version.outputs.version }}-linux-amd64.tar.gz.metadata.json
+
+  pages-proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: build
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Require successful Pages deployment for release commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_COMMIT: ${{ needs.build.outputs.commit }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REPOSITORY}" = "${CANONICAL_REPOSITORY}"
+          for _ in $(seq 1 90); do
+            run="$(
+              gh run list \
+                --repo "${GITHUB_REPOSITORY}" \
+                --workflow docs-pages.yml \
+                --commit "${RELEASE_COMMIT}" \
+                --limit 1 \
+                --json databaseId,status,conclusion \
+                --jq '.[0] | [.databaseId, .status, (.conclusion // "")] | @tsv'
+            )"
+            if [[ -z "${run}" ]]; then
+              sleep 10
+              continue
+            fi
+            IFS=$'\t' read -r run_id status conclusion <<<"${run}"
+            if [[ "${status}" == "completed" && "${conclusion}" == "success" ]]; then
+              echo "Pages workflow ${run_id} succeeded for ${RELEASE_COMMIT}."
+              exit 0
+            fi
+            if [[ "${status}" == "completed" ]]; then
+              echo "Pages workflow ${run_id} completed with ${conclusion}." >&2
+              exit 1
+            fi
+            sleep 10
+          done
+          echo "Timed out waiting for Pages proof for ${RELEASE_COMMIT}." >&2
+          exit 1
+
+  publication-preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs:
+      - build
+      - pages-proof
+    permissions:
+      contents: read
+      pages: read
+    outputs:
+      release-state: ${{ steps.preflight.outputs.release_state }}
+    steps:
+      - name: Check out exact release commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ needs.build.outputs.commit }}
+
+      - name: Prove GitHub publication prerequisites
+        id: preflight
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ADMIN_TOKEN: ${{ secrets.RELEASE_ADMIN_TOKEN }}
+          RELEASE_COMMIT: ${{ needs.build.outputs.commit }}
+          RELEASE_TAG: ${{ needs.build.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REPOSITORY}" = "${CANONICAL_REPOSITORY}"
+          test -n "${RELEASE_ADMIN_TOKEN}"
+          test "$(
+            GH_TOKEN="${RELEASE_ADMIN_TOKEN}" gh api \
+              "repos/${GITHUB_REPOSITORY}/immutable-releases" \
+              --jq .enabled
+          )" = "true"
+
+          read -r pages_type pages_url pages_status < <(
+            gh api "repos/${GITHUB_REPOSITORY}/pages" \
+              --jq '[.build_type, .html_url, .status] | @tsv'
+          )
+          test "${pages_type}" = "workflow"
+          test "${pages_url}" = "https://thesmoketeam.github.io/QaaS-Plugin/"
+          test "${pages_status}" = "built"
+
+          verify_remote_tag() {
+            local object_type
+            local object_sha
+            local depth=0
+            read -r object_type object_sha < <(
+              gh api \
+                "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" \
+                --jq '.object.type + " " + .object.sha'
+            )
+            while [[ "${object_type}" == "tag" && "${depth}" -lt 8 ]]; do
+              read -r object_type object_sha < <(
+                gh api \
+                  "repos/${GITHUB_REPOSITORY}/git/tags/${object_sha}" \
+                  --jq '.object.type + " " + .object.sha'
+              )
+              depth=$((depth + 1))
+            done
+            test "${object_type}" = "commit"
+            test "${object_sha}" = "${RELEASE_COMMIT}"
+          }
+          verify_remote_tag
+
+          error_file="$(mktemp)"
+          if release_json="$(
+            gh api \
+              "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" \
+              2>"${error_file}"
+          )"; then
+            expected_json="$(node tools/release-assets.mjs "${RELEASE_VERSION}" --json)"
+            release_state="$(
+              RELEASE_JSON="${release_json}" \
+              EXPECTED_JSON="${expected_json}" \
+              node -e '
+                const release = JSON.parse(process.env.RELEASE_JSON);
+                const expected = JSON.parse(process.env.EXPECTED_JSON);
+                const expectedSet = new Set(expected);
+                const names = (release.assets ?? []).map((asset) => asset.name);
+                if (new Set(names).size !== names.length) {
+                  throw new Error("Existing release contains duplicate asset names");
+                }
+                const unexpected = names.filter((name) => !expectedSet.has(name));
+                if (unexpected.length > 0) {
+                  throw new Error("Existing release contains unexpected assets: " + unexpected.join(", "));
+                }
+                if (release.draft === true && release.prerelease === true && release.immutable !== true) {
+                  process.stdout.write("draft");
+                } else if (release.draft === false && release.prerelease === true && release.immutable === true) {
+                  const missing = expected.filter((name) => !names.includes(name));
+                  if (missing.length > 0) {
+                    throw new Error("Immutable release is missing assets: " + missing.join(", "));
+                  }
+                  process.stdout.write("immutable");
+                } else {
+                  throw new Error("Existing release is not a recoverable draft or immutable prerelease");
+                }
+              '
+            )"
+          else
+            if grep --quiet 'HTTP 404' "${error_file}"; then
+              release_state="absent"
+            else
+              sed -n '1,20p' "${error_file}" >&2
+              exit 1
+            fi
+          fi
+          echo "release_state=${release_state}" >> "${GITHUB_OUTPUT}"
+
+  prepare-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs:
+      - build
+      - publication-preflight
+    permissions:
+      contents: write
+    outputs:
+      release-state: ${{ steps.prepare.outputs.release_state }}
+    steps:
+      - name: Reserve or verify release draft
+        id: prepare
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREFLIGHT_STATE: ${{ needs.publication-preflight.outputs.release-state }}
+          RELEASE_COMMIT: ${{ needs.build.outputs.commit }}
+          RELEASE_TAG: ${{ needs.build.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REPOSITORY}" = "${CANONICAL_REPOSITORY}"
+          if [[ "${PREFLIGHT_STATE}" == "absent" ]]; then
+            gh release create "${RELEASE_TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "QaaS Plugin ${RELEASE_VERSION}" \
+              --generate-notes \
+              --draft \
+              --prerelease \
+              --verify-tag
+          fi
+          release_state="$(
+            gh api \
+              "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" \
+              --jq '
+                if .draft == true and .prerelease == true and .immutable != true then
+                  "draft"
+                elif .draft == false and .prerelease == true and .immutable == true then
+                  "immutable"
+                else
+                  error("Release is not a recoverable draft or immutable prerelease")
+                end
+              '
+          )"
+          if [[
+            "${PREFLIGHT_STATE}" != "absent" &&
+            "${release_state}" != "${PREFLIGHT_STATE}"
+          ]]; then
+            echo "Release state changed after preflight." >&2
+            exit 1
+          fi
+          echo "release_state=${release_state}" >> "${GITHUB_OUTPUT}"
+
+  registry:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs:
+      - build
+      - publication-preflight
+      - prepare-release
+    permissions:
+      contents: read
+    outputs:
+      digest: ${{ steps.registry.outputs.digest }}
+    steps:
+      - name: Check out exact release commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ needs.build.outputs.commit }}
+
+      - name: Download verified release inputs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: qaas-plugin-release-build
+          path: dist
+
+      - name: Configure QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+
+      - name: Configure Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Preflight and recover immutable registry tags
+        id: preflight
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ADMIN_TOKEN: ${{ secrets.RELEASE_ADMIN_TOKEN }}
+          PREPARED_RELEASE_STATE: ${{ needs.prepare-release.outputs.release-state }}
+          VERSION: ${{ needs.build.outputs.version }}
+          RELEASE_TAG: ${{ needs.build.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.build.outputs.commit }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REPOSITORY}" = "${CANONICAL_REPOSITORY}"
+          test -n "${RELEASE_ADMIN_TOKEN}"
+          test "$(
+            GH_TOKEN="${RELEASE_ADMIN_TOKEN}" gh api \
+              "repos/${GITHUB_REPOSITORY}/immutable-releases" \
+              --jq .enabled
+          )" = "true"
+
+          verify_remote_tag() {
+            local object_type
+            local object_sha
+            local depth=0
+            read -r object_type object_sha < <(
+              gh api \
+                "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" \
+                --jq '.object.type + " " + .object.sha'
+            )
+            while [[ "${object_type}" == "tag" && "${depth}" -lt 8 ]]; do
+              read -r object_type object_sha < <(
+                gh api \
+                  "repos/${GITHUB_REPOSITORY}/git/tags/${object_sha}" \
+                  --jq '.object.type + " " + .object.sha'
+              )
+              depth=$((depth + 1))
+            done
+            test "${object_type}" = "commit"
+            test "${object_sha}" = "${RELEASE_COMMIT}"
+          }
+          verify_remote_tag
+
+          expected_json="$(node tools/release-assets.mjs "${VERSION}" --json)"
+          release_json="$(
+            gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}"
+          )"
+          RELEASE_JSON="${release_json}" \
+          EXPECTED_JSON="${expected_json}" \
+          EXPECTED_STATE="${PREPARED_RELEASE_STATE}" \
+          node -e '
+            const release = JSON.parse(process.env.RELEASE_JSON);
+            const expected = new Set(JSON.parse(process.env.EXPECTED_JSON));
+            const names = (release.assets ?? []).map((asset) => asset.name);
+            const unexpected = names.filter((name) => !expected.has(name));
+            if (unexpected.length > 0) {
+              throw new Error("Release gained unexpected assets before registry mutation: " + unexpected.join(", "));
+            }
+            const state =
+              release.draft === true && release.prerelease === true && release.immutable !== true
+                ? "draft"
+                : release.draft === false && release.prerelease === true && release.immutable === true
+                  ? "immutable"
+                  : "invalid";
+            if (state !== process.env.EXPECTED_STATE) {
+              throw new Error("Release state changed before registry mutation");
+            }
+          '
+
+          inspect_digest() {
+            local reference="$1"
+            local error_file
+            local output
+            local status
+            error_file="$(mktemp)"
+            set +e
+            output="$(
+              docker buildx imagetools inspect \
+                "${reference}" \
+                --format '{{.Manifest.Digest}}' \
+                2>"${error_file}"
+            )"
+            status=$?
+            set -e
+            if [[ "${status}" -eq 0 ]]; then
+              if [[ ! "${output}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+                echo "Registry returned a malformed digest for ${reference}." >&2
+                return 1
+              fi
+              printf '%s\n' "${output}"
+              return
+            fi
+            if grep --ignore-case --quiet 'manifest unknown' "${error_file}"; then
+              printf '%s\n' "__ABSENT__"
+              return
+            fi
+            echo "Registry state for ${reference} could not be proven." >&2
+            sed -n '1,20p' "${error_file}" >&2
+            return "${status}"
+          }
+
+          version_reference="${DOCKER_IMAGE}:${VERSION}"
+          commit_reference="${DOCKER_IMAGE}:sha-${RELEASE_COMMIT}"
+          version_digest="$(inspect_digest "${version_reference}")"
+          commit_digest="$(inspect_digest "${commit_reference}")"
+          if [[
+            "${version_digest}" != "__ABSENT__" &&
+            "${commit_digest}" != "__ABSENT__" &&
+            "${version_digest}" != "${commit_digest}"
+          ]]; then
+            echo "Immutable version and commit tags resolve to different digests." >&2
+            exit 1
+          fi
+
+          existing_digest=""
+          if [[ "${version_digest}" != "__ABSENT__" ]]; then
+            existing_digest="${version_digest}"
+          elif [[ "${commit_digest}" != "__ABSENT__" ]]; then
+            existing_digest="${commit_digest}"
+          fi
+
+          digest_asset="qaas-plugin-docs-${VERSION}.registry-digest.txt"
+          asset_exists="$(
+            gh release view "${RELEASE_TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --json assets \
+              --jq ".assets[] | select(.name == \"${digest_asset}\") | .name"
+          )"
+          if [[ -n "${asset_exists}" ]]; then
+            test -n "${existing_digest}"
+            asset_directory="$(mktemp -d)"
+            gh release download "${RELEASE_TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --pattern "${digest_asset}" \
+              --dir "${asset_directory}"
+            grep --fixed-strings --line-regexp --quiet \
+              "${DOCKER_IMAGE}@${existing_digest}" \
+              "${asset_directory}/${digest_asset}"
+          elif [[ "${PREPARED_RELEASE_STATE}" == "immutable" ]]; then
+            echo "Immutable release is missing its registry digest asset." >&2
+            exit 1
+          fi
+
+          if [[ -z "${existing_digest}" ]]; then
+            if [[ "${PREPARED_RELEASE_STATE}" == "immutable" ]]; then
+              echo "Immutable release has no matching registry image." >&2
+              exit 1
+            fi
+            echo "skip=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          QAAS_PLUGIN_DOCS_REGISTRY_REFERENCE="${DOCKER_IMAGE}@${existing_digest}" \
+          QAAS_PLUGIN_VERSION="${VERSION}" \
+          QAAS_PLUGIN_SOURCE_REVISION="${RELEASE_COMMIT}" \
+          QAAS_PLUGIN_SOURCE_URL="${CANONICAL_SOURCE}" \
+            node tools/verify-docs-registry-image.mjs
+
+          if [[ "${version_digest}" == "__ABSENT__" ]]; then
+            docker buildx imagetools create \
+              --tag "${version_reference}" \
+              "${DOCKER_IMAGE}@${existing_digest}"
+            test "$(inspect_digest "${version_reference}")" = "${existing_digest}"
+          fi
+          if [[ "${commit_digest}" == "__ABSENT__" ]]; then
+            docker buildx imagetools create \
+              --tag "${commit_reference}" \
+              "${DOCKER_IMAGE}@${existing_digest}"
+            test "$(inspect_digest "${commit_reference}")" = "${existing_digest}"
+          fi
+          {
+            echo "skip=true"
+            echo "digest=${existing_digest}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Build and push multi-platform documentation image
+        if: steps.preflight.outputs.skip != 'true'
+        id: image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: docs-site
+          file: docs-site/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: mode=max
+          sbom: true
+          build-args: |
+            SOURCE_DATE_EPOCH=${{ needs.build.outputs.source-epoch }}
+          tags: |
+            ${{ env.DOCKER_IMAGE }}:${{ needs.build.outputs.version }}
+            ${{ env.DOCKER_IMAGE }}:sha-${{ needs.build.outputs.commit }}
+          labels: |
+            org.opencontainers.image.title=qaas-plugin-docs
+            org.opencontainers.image.version=${{ needs.build.outputs.version }}
+            org.opencontainers.image.source=${{ env.CANONICAL_SOURCE }}
+            org.opencontainers.image.revision=${{ needs.build.outputs.commit }}
+
+      - name: Verify immutable registry result
+        id: registry
+        shell: bash
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+          RELEASE_COMMIT: ${{ needs.build.outputs.commit }}
+          PREFLIGHT_DIGEST: ${{ steps.preflight.outputs.digest }}
+          PUSHED_DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          digest="${PREFLIGHT_DIGEST:-${PUSHED_DIGEST}}"
+          if [[ ! "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "Registry did not produce one exact sha256 digest." >&2
+            exit 1
+          fi
+          actual="$(
+            docker buildx imagetools inspect \
+              "${DOCKER_IMAGE}:${VERSION}" \
+              --format '{{.Manifest.Digest}}'
+          )"
+          test "${actual}" = "${digest}"
+          commit_actual="$(
+            docker buildx imagetools inspect \
+              "${DOCKER_IMAGE}:sha-${RELEASE_COMMIT}" \
+              --format '{{.Manifest.Digest}}'
+          )"
+          test "${commit_actual}" = "${digest}"
+          QAAS_PLUGIN_DOCS_REGISTRY_REFERENCE="${DOCKER_IMAGE}@${digest}" \
+          QAAS_PLUGIN_VERSION="${VERSION}" \
+          QAAS_PLUGIN_SOURCE_REVISION="${RELEASE_COMMIT}" \
+          QAAS_PLUGIN_SOURCE_URL="${CANONICAL_SOURCE}" \
+            node tools/verify-docs-registry-image.mjs
+          echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
+
+      - name: Complete digest-pinned and air-gap release artifacts
+        shell: bash
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+          REGISTRY_DIGEST: ${{ steps.registry.outputs.digest }}
+        run: |
+          set -euo pipefail
+          registry_manifest="dist/qaas-plugin-docs-kubernetes-${VERSION}.yaml"
+          airgap_manifest="dist/qaas-plugin-docs-kubernetes-airgap-${VERSION}.yaml"
+          QAAS_PLUGIN_DOCS_REGISTRY_DIGEST="${REGISTRY_DIGEST}" \
+            node tools/package-docs-kubernetes.mjs
+          docker run --rm \
+            --volume "${PWD}:/repo:ro" \
+            ghcr.io/yannh/kubeconform@sha256:faffaf43f95aa6425306e1ab8d6fcad72acb9049158f38e574c085ea1ec0f64e \
+            -strict -summary "/repo/${registry_manifest}" "/repo/${airgap_manifest}"
+          printf '%s@%s\n' "${DOCKER_IMAGE}" "${REGISTRY_DIGEST}" \
+            > "dist/qaas-plugin-docs-${VERSION}.registry-digest.txt"
+          (
+            cd dist
+            sha256sum \
+              "qaas-plugin-${VERSION}.zip" \
+              "qaas-plugin-${VERSION}.zip.sha256" \
+              "qaas-plugin-${VERSION}.zip.manifest.json" \
+              "qaas-plugin-docs-${VERSION}-linux-amd64.tar.gz" \
+              "qaas-plugin-docs-${VERSION}-linux-amd64.tar.gz.sha256" \
+              "qaas-plugin-docs-${VERSION}-linux-amd64.tar.gz.metadata.json" \
+              "qaas-plugin-docs-kubernetes-${VERSION}.yaml" \
+              "qaas-plugin-docs-kubernetes-airgap-${VERSION}.yaml" \
+              "qaas-plugin-docs-${VERSION}.registry-digest.txt" \
+              > "qaas-plugin-${VERSION}-release.sha256"
+          )
+
+      - name: Upload immutable release artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: qaas-plugin-release-ready
+          if-no-files-found: error
+          retention-days: 1
+          path: |
+            dist/qaas-plugin-${{ needs.build.outputs.version }}.zip
+            dist/qaas-plugin-${{ needs.build.outputs.version }}.zip.sha256
+            dist/qaas-plugin-${{ needs.build.outputs.version }}.zip.manifest.json
+            dist/qaas-plugin-docs-${{ needs.build.outputs.version }}-linux-amd64.tar.gz
+            dist/qaas-plugin-docs-${{ needs.build.outputs.version }}-linux-amd64.tar.gz.sha256
+            dist/qaas-plugin-docs-${{ needs.build.outputs.version }}-linux-amd64.tar.gz.metadata.json
+            dist/qaas-plugin-docs-kubernetes-${{ needs.build.outputs.version }}.yaml
+            dist/qaas-plugin-docs-kubernetes-airgap-${{ needs.build.outputs.version }}.yaml
+            dist/qaas-plugin-docs-${{ needs.build.outputs.version }}.registry-digest.txt
+            dist/qaas-plugin-${{ needs.build.outputs.version }}-release.sha256
+
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs:
+      - build
+      - pages-proof
+      - publication-preflight
+      - prepare-release
+      - registry
+    permissions:
+      contents: write
+    steps:
+      - name: Check out exact release commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ needs.build.outputs.commit }}
+
+      - name: Download immutable release artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: qaas-plugin-release-ready
+          path: dist
+
+      - name: Verify release artifact checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          (
+            cd dist
+            sha256sum --check \
+              "qaas-plugin-${{ needs.build.outputs.version }}-release.sha256"
+          )
+
+      - name: Verify all existing assets before uploading missing assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.build.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          mapfile -t expected < <(
+            node tools/release-assets.mjs "${RELEASE_VERSION}"
+          )
+          expected_json="$(
+            node tools/release-assets.mjs "${RELEASE_VERSION}" --json
+          )"
+          release_json="$(
+            gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}"
+          )"
+          existing_json="$(
+            RELEASE_JSON="${release_json}" \
+            EXPECTED_JSON="${expected_json}" \
+            node -e '
+              const release = JSON.parse(process.env.RELEASE_JSON);
+              const expected = new Set(JSON.parse(process.env.EXPECTED_JSON));
+              const names = (release.assets ?? []).map((asset) => asset.name);
+              if (new Set(names).size !== names.length) {
+                throw new Error("Release contains duplicate asset names");
+              }
+              const unexpected = names.filter((name) => !expected.has(name));
+              if (unexpected.length > 0) {
+                throw new Error("Release contains unexpected assets: " + unexpected.join(", "));
+              }
+              process.stdout.write(JSON.stringify(names));
+            '
+          )"
+
+          comparison="$(mktemp -d)"
+          EXISTING_JSON="${existing_json}" node -e '
+            for (const name of JSON.parse(process.env.EXISTING_JSON)) {
+              process.stdout.write(name + "\n");
+            }
+          ' | while IFS= read -r name; do
+            gh release download "${RELEASE_TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --pattern "${name}" \
+              --dir "${comparison}"
+            cmp --silent "dist/${name}" "${comparison}/${name}" || {
+              echo "Existing release asset ${name} differs from the verified build." >&2
+              exit 1
+            }
+          done
+
+          is_immutable="$(
+            RELEASE_JSON="${release_json}" node -e '
+              const release = JSON.parse(process.env.RELEASE_JSON);
+              process.stdout.write(String(release.immutable === true));
+            '
+          )"
+          for name in "${expected[@]}"; do
+            if ! EXISTING_JSON="${existing_json}" NAME="${name}" node -e '
+              process.exit(JSON.parse(process.env.EXISTING_JSON).includes(process.env.NAME) ? 0 : 1);
+            '; then
+              if [[ "${is_immutable}" == "true" ]]; then
+                echo "Immutable release is missing ${name}." >&2
+                exit 1
+              fi
+              gh release upload "${RELEASE_TAG}" "dist/${name}" \
+                --repo "${GITHUB_REPOSITORY}"
+            fi
+          done
+
+          final_json="$(
+            gh release view "${RELEASE_TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --json assets \
+              --jq '[.assets[].name] | sort'
+          )"
+          EXPECTED_JSON="${expected_json}" FINAL_JSON="${final_json}" node -e '
+            const expected = JSON.parse(process.env.EXPECTED_JSON).sort();
+            const actual = JSON.parse(process.env.FINAL_JSON);
+            if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+              throw new Error("Release asset set is not exact after upload");
+            }
+          '
+          final_comparison="$(mktemp -d)"
+          gh release download "${RELEASE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --dir "${final_comparison}"
+          for name in "${expected[@]}"; do
+            cmp --silent "dist/${name}" "${final_comparison}/${name}" || {
+              echo "Final release asset ${name} differs from the verified build." >&2
+              exit 1
+            }
+          done
+
+      - name: Publish and prove immutable prerelease
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_COMMIT: ${{ needs.build.outputs.commit }}
+          RELEASE_TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          set -euo pipefail
+          verify_remote_tag() {
+            local object_type
+            local object_sha
+            local depth=0
+            read -r object_type object_sha < <(
+              gh api \
+                "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" \
+                --jq '.object.type + " " + .object.sha'
+            )
+            while [[ "${object_type}" == "tag" && "${depth}" -lt 8 ]]; do
+              read -r object_type object_sha < <(
+                gh api \
+                  "repos/${GITHUB_REPOSITORY}/git/tags/${object_sha}" \
+                  --jq '.object.type + " " + .object.sha'
+              )
+              depth=$((depth + 1))
+            done
+            test "${object_type}" = "commit"
+            test "${object_sha}" = "${RELEASE_COMMIT}"
+          }
+          verify_remote_tag
+          release_state="$(
+            gh api \
+              "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" \
+              --jq '[.draft, .prerelease, .immutable] | @tsv'
+          )"
+          IFS=$'\t' read -r is_draft is_prerelease is_immutable \
+            <<< "${release_state}"
+          if [[ "${is_draft}" == "true" && "${is_prerelease}" == "true" ]]; then
+            gh release edit "${RELEASE_TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --draft=false \
+              --prerelease
+          elif [[
+            "${is_draft}" != "false" ||
+            "${is_prerelease}" != "true" ||
+            "${is_immutable}" != "true"
+          ]]; then
+            echo "Release is not a publishable draft or immutable prerelease." >&2
+            exit 1
+          fi
+          for _ in $(seq 1 30); do
+            release_state="$(
+              gh api \
+                "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" \
+                --jq '[.draft, .prerelease, .immutable] | @tsv'
+            )"
+            IFS=$'\t' read -r is_draft is_prerelease is_immutable \
+              <<< "${release_state}"
+            if [[
+              "${is_draft}" == "false" &&
+              "${is_prerelease}" == "true" &&
+              "${is_immutable}" == "true"
+            ]]; then
+              echo "${RELEASE_TAG} is an immutable prerelease."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "${RELEASE_TAG} did not become immutable." >&2
+          exit 1

@@ -7,8 +7,9 @@ existing plan's paths and semantics:
 node "${CLAUDE_PLUGIN_ROOT}/scripts/workflow-authority.mjs" recover --session-handle <handle> --mode exact
 ```
 
-This enters `REPAIRING`; edit only existing approved scope, then rerun build and
-template before requesting another execution review.
+This enters `REPAIRING`; edit only existing approved scope, then prepare fresh
+exact user-run build/template handoffs and import bounded evidence before
+requesting another execution review.
 
 If new paths, packages, commands, semantics, targets, or environment scope are
 needed:

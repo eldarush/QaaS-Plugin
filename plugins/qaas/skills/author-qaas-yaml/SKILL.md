@@ -12,6 +12,10 @@ bounded current envelope and returns results to that coordinator.
 If invoked outside an implementation or approved repair phase, return control to `qaas-workflow` without writing.
 
 - Require complete readiness, a fresh approved plan, active hook attestation, and exact approved paths.
+- Require the approved operation and complete-target `changes[].targetSha256`
+  for every delegated path. Apply the already-drafted bytes with `Write` only
+  for create or one unique-match bounded `Edit` only for modify; never redraft
+  after approval or use `NotebookEdit`.
 - Retrieve current documentation for each QaaS-dependent construct. Never
   invent QaaS keys, shapes, defaults, anchor/merge behavior, variable semantics,
   modules, executable/case semantics, or commands. Minimal local anchor,

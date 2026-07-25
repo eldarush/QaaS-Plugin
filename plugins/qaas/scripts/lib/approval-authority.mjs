@@ -164,7 +164,7 @@ async function initializeMetadata({
 export async function openAuthority({
   pluginData,
   projectRoot,
-  pluginVersion = "0.3.0",
+  pluginVersion = "0.4.0",
   create = false,
 }) {
   if (typeof pluginData !== "string" || pluginData.trim() === "") {
@@ -747,6 +747,7 @@ export async function createApprovalChallenge(
       "execution",
       "mutation",
       "capabilities",
+      "docs-mcp-probe",
       "source-checkout",
       "source-read",
       "readiness-fact",

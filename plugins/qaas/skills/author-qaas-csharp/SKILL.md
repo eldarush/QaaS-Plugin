@@ -28,12 +28,13 @@ If invoked outside an implementation or approved repair phase, return control to
   newly needed, write nothing and return to one-question/one-query planning for
   a revised approval. Do not discover, infer, or invent closure after approval.
 - Read the signed active authority projection's
-  `authorityCapabilities.writeContentBinding`. It is `false` in this release,
-  so do not require or invent target bytes. Only if a future active authority
-  reports `true`, require the approved exact complete target bytes, their
-  SHA-256, and one matching
-  `write <add|modify> <path> sha256:<digest>` command per scoped write. Do not
-  redraft content after approval.
+  `authorityCapabilities.writeContentBinding`; require `true` or return to the
+  coordinator without writing. Require the approved exact complete target
+  bytes, their SHA-256, and matching structured
+  `changes[].targetSha256` for every scoped
+  write. Do not redraft content after approval. Use `Write` only for an absent
+  `create` path and a unique-match bounded `Edit` only for an existing
+  `modify` path; never use `NotebookEdit`.
 - Preserve disclosed literal tokens and array order exactly in structured
   semantic contracts; never paraphrase, substitute synonyms, reorder, or
   normalize them.

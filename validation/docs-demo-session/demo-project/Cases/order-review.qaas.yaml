@@ -1,0 +1,5 @@
+protocol: http
+serialization: json
+kind: smoke
+base: &base
+  delay: 250 ms

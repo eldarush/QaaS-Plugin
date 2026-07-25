@@ -14,10 +14,10 @@ files or resources.
 | Create a protected immutable reference checkout | Exact one-use source-checkout approval during discovery |
 | Write approved `.claude/` context | Exact context transaction approval |
 | Write test-project files | Exact implementation-plan approval |
-| Restore, build, render QaaS template | Covered only when listed in that plan |
-| Execute QaaS tests | Separate execution-plan approval |
+| Restore, build, render QaaS template | Plugin shows the exact plan-bound vector; the user runs it outside the plugin and supplies bounded evidence |
+| Execute QaaS tests | Separate execution-plan approval, then exact user-run handoff and bounded evidence import |
 | Query task-relevant observability | Separate capability-bound query-plan approval, consumed once |
-| Mutate infrastructure without deletion | Separate mutation-plan approval |
+| Mutate infrastructure without deletion | Separate mutation-plan approval, then exact user-run handoff; never plugin-executed in this release |
 | Delete, remove, move, rename, cleanup, teardown | Always denied to agent |
 
 The workflow asks once for a coherent reviewed operation, not once per
@@ -52,11 +52,14 @@ An execution plan separately binds the exact environment, QaaS invocation,
 cases/executables/sessions, message count, expected side effects, output paths,
 typed oracle checks, and repetition. Its `observabilityQueries` array is always
 empty. Rate, duration, and timeout are required only for a requested stress
-test.
+test. Approval does not make local execution safe: this release has no
+demonstrably OS-confined trusted runner, so it displays the exact reviewed
+process vector for the user and never launches it.
 
 A mutation plan is exceptional and only for a user-requested non-deleting
 infrastructure change. It binds tool, resource, action, environment, side
-effects, rollback limitation, and verification. It cannot authorize deletion.
+effects, rollback limitation, and verification. It cannot authorize deletion
+and the plugin does not execute it.
 
 ## Query approval
 
@@ -82,7 +85,8 @@ endpoint-value digest, which are recomputed immediately before access.
 
 ## No-deletion invariant
 
-The pre-tool analyzer denies direct and indirect deletion surfaces, including:
+The pre-tool analyzer denies deletion surfaces visible in model-mediated tool
+requests, including:
 
 - File APIs and shell commands that delete, move, rename, replace by relocation,
   clean, prune, or tear down.
@@ -93,6 +97,24 @@ The pre-tool analyzer denies direct and indirect deletion surfaces, including:
 - Database DROP/TRUNCATE/destructive operations.
 - MCP tools with delete/move/cleanup semantics.
 - Opaque scripts or unresolved commands that cannot be safely classified.
+
+Static analysis cannot prove what project code, build targets, packages,
+custom hooks, external tools, or infrastructure clients will do after launch.
+Consequently the plugin never automatically launches restore, build, template,
+test-run, infrastructure-mutation, or comparable project/external-code
+processes in this release. There is no environment flag, approval choice, or
+unsafe override. A future automatic path requires a demonstrably OS-confined
+runner and a new reviewed release.
+
+`run-approved.mjs` instead returns the exact signed executable path, argument
+vector, working directory, permitted environment-variable names, executable
+and process-specification digests, and output bounds. The user may run that
+vector outside the plugin. The helper can then read one fixed project-relative
+JSON evidence file, at most 16 KiB, after rejecting symlinks, scope escape,
+invalid UTF-8, stale digests, extra fields, oversized output, and secret-like
+content. Imported evidence is recorded as `user-run-process`; it is
+user-attested diagnostic evidence, not proof that a trusted runner enforced
+no deletion.
 
 Approved edits may remove or replace lines inside an approved file. They may
 remove an obsolete package reference. They may not remove the file. If cleanup
@@ -111,8 +133,9 @@ authorization containing:
 - Expected output classes and expiry.
 
 Unknown variables, aliases, nested shells, substitutions, redirections,
-pipelines, command strings, or MCP schemas fail closed. A safe-looking wrapper
-cannot conceal a destructive inner operation.
+pipelines, command strings, or MCP schemas fail closed. Because source
+inspection cannot establish the behavior of a safe-looking executable, the
+plugin does not launch project/external-code wrappers at all.
 
 After the operation, the post-tool ledger consumes the authorization and
 records exit/result metadata, redacted evidence, and resulting fingerprints.
@@ -167,8 +190,9 @@ bearing URLs, private keys, raw tokens, and authority keys are rejected.
 
 Claude Code hooks are a strong workflow control, not an operating-system
 sandbox. A local user can disable the plugin or tamper with its files. The
-plugin therefore attests its active hook configuration before any mutation or
-execution; failure blocks the phase.
+plugin therefore attests its active hook configuration before writes and
+approval workflows. Hook attestation is not presented as process isolation;
+automatic project/external-code execution remains disabled.
 
 Run the target-runtime acceptance checklist under the organization's actual
 Claude Code, model gateway, permission settings, shell, MCPs, and file-system

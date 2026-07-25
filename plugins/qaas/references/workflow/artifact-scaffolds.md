@@ -12,8 +12,10 @@ proven by current QaaS documentation when authoring a test project.
 
 For `plan`, `execution`, and `query`, send the complete JSON without a top-level
 `digest` to `workflow-authority.mjs stage`. Staging computes and inserts that
-digest before validation. Do not use the encoder's `transportSha256`. Inner
-query digests are different: compute `toolInputDigest` over the exact
+digest before validation. Do not use the encoder's `transportSha256` as that
+top-level artifact digest; it may fill `changes[].targetSha256` only when its
+input was that file's exact complete target content. Inner query digests are
+different: compute `toolInputDigest` over the exact
 `toolInput`, then `queryDigest` over the exact query without `queryDigest`.
 
 ## Readiness/context fact
@@ -114,7 +116,8 @@ shortcut for an unknown.
     {
       "path": "Program.cs",
       "operation": "modify",
-      "intent": "Apply only the exact reviewed bootstrap change"
+      "intent": "Apply only the exact reviewed bootstrap change",
+      "targetSha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
     }
   ],
   "dependencies": [],

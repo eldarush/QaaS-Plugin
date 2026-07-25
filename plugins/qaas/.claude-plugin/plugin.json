@@ -1,13 +1,13 @@
 {
   "name": "qaas",
   "displayName": "QaaS",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "A safety-gated Claude Code workflow for documentation-backed QaaS test authoring and verification.",
   "author": {
     "name": "Firefly"
   },
-  "homepage": "https://github.com/eldarush/QaaS-Plugin",
-  "repository": "https://github.com/eldarush/QaaS-Plugin",
+  "homepage": "https://github.com/TheSmokeTeam/QaaS-Plugin",
+  "repository": "https://github.com/TheSmokeTeam/QaaS-Plugin",
   "keywords": [
     "qaas",
     "qa",

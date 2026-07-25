@@ -6,6 +6,7 @@ import { describeConfiguredSourceRead } from "./source-read-adapter.mjs";
 
 export const REVIEWED_SOURCE_READ_SOURCES = Object.freeze([
   "gitlab",
+  "artifactory",
   "modules",
   "common-hooks",
 ]);
@@ -25,7 +26,7 @@ export async function resolveSourceReadRequest({
     !REVIEWED_SOURCE_SET.has(args.source)
   ) {
     throw new Error(
-      "--base-url is accepted only for exact GitLab, module, or Common Hooks project sources",
+      "--base-url is accepted only for exact GitLab, Artifactory, module, or Common Hooks project sources",
     );
   }
   if (

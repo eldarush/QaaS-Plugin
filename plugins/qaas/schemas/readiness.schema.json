@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/eldarush/QaaS-Plugin/schemas/readiness.schema.json",
+  "$id": "https://github.com/TheSmokeTeam/QaaS-Plugin/schemas/readiness.schema.json",
   "title": "QaaS evidence-bound readiness matrix",
   "type": "object",
   "additionalProperties": false,

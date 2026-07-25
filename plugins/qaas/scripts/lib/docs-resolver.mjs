@@ -13,40 +13,49 @@ import {
   validateCapabilityRegistry,
 } from "./mcp-analyzer.mjs";
 import {
+  assertDocsCapabilitiesBacked,
+} from "./docs-mcp-probe.mjs";
+import {
   BUILT_IN_QAAS_DOCS_URL,
   builtInEndpoint,
 } from "./built-in-endpoints.mjs";
+import { assertCredentialFreeQueryParameters } from "./url-safety.mjs";
 
 const DEFAULT_OUTPUT_LIMIT = 16 * 1024;
+const DOCUMENTATION_INDEX_INPUT_LIMIT = 256 * 1024;
+const MAX_DOCUMENTATION_URL_BYTES = 4 * 1024;
 export const DEFAULT_QAAS_DOCS_URL = BUILT_IN_QAAS_DOCS_URL;
 export const QAAS_DOCS_CONFIGURATION_NAMES = Object.freeze([
-  "QAAS_DOCS_PRIMARY_URL",
-  "QAAS_DOCS_SECONDARY_URL",
-  "QAAS_DOCS_ZIM_PATH",
+  "QAAS_DOCS_HELM_URL",
+  "QAAS_DOCS_WIKIALL_URL",
   "QAAS_DOCS_MCP_URL",
   "QAAS_DOCS_MCP_CREDENTIAL_ENV",
+  "QAAS_DOCS_AIRGAP",
+  "QAAS_DOCS_ZIM_PATH",
+  "QAAS_DOCS_PRIMARY_URL",
+  "QAAS_DOCS_SECONDARY_URL",
 ]);
-const CREDENTIAL_QUERY_KEY =
-  /(?:token|secret|password|api[-_]?key|signature|credential|auth)/iu;
-const HIGH_ENTROPY_QUERY_VALUE =
-  /^(?=.{24,256}$)(?=.*[A-Za-z])(?=.*\d)[A-Za-z0-9._~+/=-]+$/u;
-
-function assertSafeQueryValues(url, label) {
-  for (const [key, value] of url.searchParams) {
-    if (CREDENTIAL_QUERY_KEY.test(key)) {
-      throw new Error(`${label} may not contain credential query parameters`);
-    }
-    if (
-      secretFindings(value).length > 0 ||
-      HIGH_ENTROPY_QUERY_VALUE.test(value)
-    ) {
-      throw new Error(`${label} contains a secret-like query value`);
-    }
-  }
-}
+export const QAAS_DOCS_RESOLUTION_ORDER = Object.freeze([
+  "wikiall-mcp",
+  "helm-http",
+  "wikiall-http",
+  "built-in-public",
+]);
+export const QAAS_DOCS_AIRGAP_RESOLUTION_ORDER = Object.freeze([
+  "wikiall-mcp",
+  "helm-http",
+  "wikiall-http",
+]);
+export const QAAS_DOCS_DEPRECATED_ALIASES = Object.freeze({
+  QAAS_DOCS_PRIMARY_URL: "QAAS_DOCS_HELM_URL",
+  QAAS_DOCS_SECONDARY_URL: "QAAS_DOCS_WIKIALL_URL",
+});
 
 function configuredUrl(name, value) {
   if (!value) return null;
+  if (Buffer.byteLength(value, "utf8") > MAX_DOCUMENTATION_URL_BYTES) {
+    throw new Error(`${name} exceeds the 4 KiB URL bound`);
+  }
   let url;
   try {
     url = new URL(value);
@@ -59,47 +68,91 @@ function configuredUrl(name, value) {
   if (url.username || url.password) {
     throw new Error(`${name} may not contain credentials`);
   }
-  assertSafeQueryValues(url, name);
+  if (url.hash) {
+    throw new Error(`${name} may not contain a fragment`);
+  }
+  assertCredentialFreeQueryParameters(url, name);
   return url.toString();
 }
 
-function builtInDocsIdentity(env) {
-  const endpoint = builtInEndpoint("docs");
-  const legacyName = "QAAS_DOCS_PRIMARY_URL";
-  const legacyPresent = Object.hasOwn(env, legacyName);
-  const legacyRaw = env[legacyName];
-  if (legacyRaw) configuredUrl(legacyName, legacyRaw);
+function urlIdentity(url) {
+  const parsed = new URL(url);
   return {
-    selector: "built-in:qaas-docs",
-    selectorPresent: true,
-    selectorValueDigest: endpoint.urlDigest,
-    effective: {
-      protocol: endpoint.protocol,
-      origin: endpoint.origin,
-      pathname: endpoint.pathname,
-      queryParameterNames: [],
-      urlDigest: endpoint.urlDigest,
-    },
-    ignoredLegacyOverride: {
-      selector: legacyName,
-      selectorPresent: legacyPresent,
-      selectorValueDigest:
-        legacyPresent ? sha256(String(legacyRaw)) : null,
-    },
+    protocol: parsed.protocol,
+    origin: parsed.origin,
+    pathname: parsed.pathname,
+    queryParameterNames: [...parsed.searchParams.keys()].sort(),
+    urlDigest: sha256(parsed.toString()),
   };
 }
 
-function ignoredUrlOverrideIdentity(name, env) {
+function configuredDocsUrl(name, alias, env) {
+  const configuredRaw = env[name];
+  const aliasRaw = env[alias];
+  const configured = configuredRaw
+    ? configuredUrl(name, configuredRaw)
+    : null;
+  const deprecated = aliasRaw
+    ? configuredUrl(alias, aliasRaw)
+    : null;
+  if (configured && deprecated && configured !== deprecated) {
+    throw new Error(
+      `${name} conflicts with deprecated ${alias}; keep only the canonical selector`,
+    );
+  }
+  return configured ?? deprecated;
+}
+
+function configuredDocsUrlIdentity(name, alias, env) {
+  const selected = configuredDocsUrl(name, alias, env);
   const selectorPresent = Object.hasOwn(env, name);
-  const raw = env[name];
-  if (raw) configuredUrl(name, raw);
+  const aliasPresent = Object.hasOwn(env, alias);
   return {
     selector: name,
     selectorPresent,
     selectorValueDigest:
-      selectorPresent ? sha256(String(raw)) : null,
-    effective: null,
-    ignored: true,
+      selectorPresent ? sha256(String(env[name])) : null,
+    deprecatedAlias: {
+      selector: alias,
+      selectorPresent: aliasPresent,
+      selectorValueDigest:
+        aliasPresent ? sha256(String(env[alias])) : null,
+      selected: !env[name] && Boolean(env[alias]),
+    },
+    selectedBy: env[name] ? name : env[alias] ? alias : null,
+    effective: selected ? urlIdentity(selected) : null,
+  };
+}
+
+function builtInDocsIdentity() {
+  const endpoint = builtInEndpoint("docs");
+  return {
+    selector: "built-in:qaas-docs",
+    selectorPresent: true,
+    selectorValueDigest: endpoint.urlDigest,
+    effective: urlIdentity(endpoint.url),
+  };
+}
+
+function configuredAirgapIdentity(env) {
+  const selector = "QAAS_DOCS_AIRGAP";
+  const selectorPresent = Object.hasOwn(env, selector);
+  const raw = selectorPresent ? String(env[selector]).trim().toLowerCase() : "";
+  let enabled = false;
+  if (raw) {
+    if (["true", "1", "yes"].includes(raw)) enabled = true;
+    else if (!["false", "0", "no"].includes(raw)) {
+      throw new Error(
+        "QAAS_DOCS_AIRGAP must be true/false, 1/0, or yes/no",
+      );
+    }
+  }
+  return {
+    selector,
+    selectorPresent,
+    selectorValueDigest:
+      selectorPresent ? sha256(String(env[selector])) : null,
+    enabled,
   };
 }
 
@@ -133,6 +186,40 @@ function configuredMcpIdentity(env) {
       urlDigest: sha256(url.toString()),
     },
   };
+}
+
+function configuredMcpCredentialSelector(env, mcpUrl) {
+  const selector = env.QAAS_DOCS_MCP_CREDENTIAL_ENV ?? null;
+  if (
+    selector !== null &&
+    (
+      typeof selector !== "string" ||
+      !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(selector) ||
+      /^(?:CLAUDE_|CODEX_|ANTHROPIC_)/u.test(selector)
+    )
+  ) {
+    throw new Error(
+      "QAAS_DOCS_MCP_CREDENTIAL_ENV must name one safe credential variable",
+    );
+  }
+  if (selector && !mcpUrl) {
+    throw new Error(
+      "QAAS_DOCS_MCP_CREDENTIAL_ENV requires QAAS_DOCS_MCP_URL",
+    );
+  }
+  if (selector && mcpUrl) {
+    const endpoint = new URL(mcpUrl);
+    const loopback =
+      endpoint.hostname === "127.0.0.1" ||
+      endpoint.hostname === "[::1]" ||
+      /^127(?:\.\d{1,3}){3}$/u.test(endpoint.hostname);
+    if (endpoint.protocol !== "https:" && !loopback) {
+      throw new Error(
+        "Documentation MCP bearer credentials require HTTPS or an explicit loopback endpoint",
+      );
+    }
+  }
+  return selector;
 }
 
 async function configuredZimIdentity(env) {
@@ -182,34 +269,43 @@ async function configuredZimIdentity(env) {
 export async function attestDocumentationSourceConfiguration(
   env = process.env,
 ) {
-  const credentialSelector = env.QAAS_DOCS_MCP_CREDENTIAL_ENV ?? null;
-  if (
-    credentialSelector !== null &&
-    (
-      !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(credentialSelector) ||
-      /^(?:CLAUDE_|CODEX_|ANTHROPIC_)/u.test(credentialSelector)
-    )
-  ) {
-    throw new Error(
-      "QAAS_DOCS_MCP_CREDENTIAL_ENV must name one safe credential variable",
-    );
-  }
+  const airgap = configuredAirgapIdentity(env);
+  const mcp = configuredMcpIdentity(env);
+  const credentialSelector = configuredMcpCredentialSelector(
+    env,
+    env.QAAS_DOCS_MCP_URL
+      ? configuredUrl("QAAS_DOCS_MCP_URL", env.QAAS_DOCS_MCP_URL)
+      : null,
+  );
   const attestation = {
     schemaVersion: "1.0",
     configurationNames: [...QAAS_DOCS_CONFIGURATION_NAMES],
+    deprecatedAliases: { ...QAAS_DOCS_DEPRECATED_ALIASES },
+    resolutionOrder: [
+      ...(airgap.enabled
+        ? QAAS_DOCS_AIRGAP_RESOLUTION_ORDER
+        : QAAS_DOCS_RESOLUTION_ORDER),
+    ],
     builtInEndpoints: {
       docs: builtInEndpoint("docs"),
     },
     builtInEndpointDigests: {
       docs: canonicalDigest(builtInEndpoint("docs")),
     },
-    primary: builtInDocsIdentity(env),
-    secondary: ignoredUrlOverrideIdentity(
+    helm: configuredDocsUrlIdentity(
+      "QAAS_DOCS_HELM_URL",
+      "QAAS_DOCS_PRIMARY_URL",
+      env,
+    ),
+    wikiAll: configuredDocsUrlIdentity(
+      "QAAS_DOCS_WIKIALL_URL",
       "QAAS_DOCS_SECONDARY_URL",
       env,
     ),
+    public: builtInDocsIdentity(),
+    airgap,
     zim: await configuredZimIdentity(env),
-    mcp: configuredMcpIdentity(env),
+    mcp,
     mcpCredential: {
       selector: "QAAS_DOCS_MCP_CREDENTIAL_ENV",
       selectorPresent: Object.hasOwn(
@@ -222,6 +318,14 @@ export async function attestDocumentationSourceConfiguration(
           ? null
           : Boolean(env[credentialSelector]),
     },
+  };
+  attestation.selectedSourceDigests = {
+    "wikiall-mcp": attestation.mcp.effective?.urlDigest ?? null,
+    "helm-http": attestation.helm.effective?.urlDigest ?? null,
+    "wikiall-http": attestation.wikiAll.effective?.urlDigest ?? null,
+    "built-in-public": airgap.enabled
+      ? null
+      : attestation.public.effective.urlDigest,
   };
   attestation.digest = canonicalDigest(attestation);
   return attestation;
@@ -249,7 +353,10 @@ export async function assertCurrentDocumentationSourceConfiguration(
 export function resolveDocumentationSources({
   env = process.env,
   capabilityRegistry = null,
+  probeEvidence = null,
+  approvedTransport = null,
 } = {}) {
+  const airgap = configuredAirgapIdentity(env);
   let mcp = null;
   if (capabilityRegistry) {
     const validation = validateCapabilityRegistry(capabilityRegistry);
@@ -258,27 +365,97 @@ export function resolveDocumentationSources({
         `Invalid integration capability registry: ${validation.errors.join("; ")}`,
       );
     }
-    const search = capabilityRegistry.capabilities.find(
+    assertDocsCapabilitiesBacked({
+      registry: capabilityRegistry,
+      evidence: probeEvidence,
+      transport: approvedTransport,
+    });
+    const docsCapabilities = capabilityRegistry.capabilities.filter(
       (entry) =>
-        entry.logicalOperation === "docs.search" &&
+        ["docs.search", "docs.read"].includes(entry.logicalOperation) &&
         entry.classification === "read" &&
-        entry.probePassed === true,
+        entry.probePassed === true &&
+        entry.userApproved === true,
     );
-    const read = capabilityRegistry.capabilities.find(
-      (entry) =>
-        entry.logicalOperation === "docs.read" &&
-        entry.classification === "read" &&
-        entry.probePassed === true,
+    const byServer = new Map();
+    for (const capability of docsCapabilities) {
+      const pair = byServer.get(capability.server) ?? {
+        search: [],
+        read: [],
+      };
+      if (capability.logicalOperation === "docs.search") {
+        pair.search.push(capability);
+      } else {
+        pair.read.push(capability);
+      }
+      byServer.set(capability.server, pair);
+    }
+    const completePairs = [...byServer.values()].filter(
+      (pair) => pair.search.length > 0 && pair.read.length > 0,
     );
-    if (search && read) mcp = { search, read };
+    if (
+      completePairs.length > 1 ||
+      completePairs.some(
+        (pair) => pair.search.length !== 1 || pair.read.length !== 1,
+      )
+    ) {
+      throw new Error(
+        "Multiple approved documentation MCP capability pairs are ambiguous",
+      );
+    }
+    if (completePairs.length === 1) {
+      mcp = {
+        search: completePairs[0].search[0],
+        read: completePairs[0].read[0],
+      };
+    }
   }
+  const mcpUrl = configuredUrl(
+    "QAAS_DOCS_MCP_URL",
+    env.QAAS_DOCS_MCP_URL,
+  );
+  configuredMcpCredentialSelector(env, mcpUrl);
+  const helmUrl = configuredDocsUrl(
+    "QAAS_DOCS_HELM_URL",
+    "QAAS_DOCS_PRIMARY_URL",
+    env,
+  );
+  const wikiAllUrl = configuredDocsUrl(
+    "QAAS_DOCS_WIKIALL_URL",
+    "QAAS_DOCS_SECONDARY_URL",
+    env,
+  );
+  const orderedHttpSources = [
+    { source: "helm-http", baseUrl: helmUrl },
+    { source: "wikiall-http", baseUrl: wikiAllUrl },
+    ...(airgap.enabled
+      ? []
+      : [{ source: "built-in-public", baseUrl: DEFAULT_QAAS_DOCS_URL }]),
+  ].filter((entry) => entry.baseUrl);
+  const seen = new Set();
+  const httpSources = orderedHttpSources.filter((entry) => {
+    if (seen.has(entry.baseUrl)) return false;
+    seen.add(entry.baseUrl);
+    return true;
+  });
   return {
     mcp,
     builtInEndpoints: {
       docs: builtInEndpoint("docs"),
     },
-    primaryUrl: DEFAULT_QAAS_DOCS_URL,
-    secondaryUrl: null,
+    resolutionOrder: [
+      ...(airgap.enabled
+        ? QAAS_DOCS_AIRGAP_RESOLUTION_ORDER
+        : QAAS_DOCS_RESOLUTION_ORDER),
+    ],
+    airgap,
+    mcpUrl,
+    helmUrl,
+    wikiAllUrl,
+    builtInUrl: airgap.enabled ? null : DEFAULT_QAAS_DOCS_URL,
+    httpSources,
+    primaryUrl: httpSources[0]?.baseUrl ?? null,
+    secondaryUrl: httpSources[1]?.baseUrl ?? null,
     zimPath: env.QAAS_DOCS_ZIM_PATH
       ? path.resolve(env.QAAS_DOCS_ZIM_PATH)
       : null,
@@ -358,7 +535,7 @@ async function fetchBounded(url, { outputLimitBytes, timeoutMs, allowedBase }) {
   if (requested.username || requested.password) {
     throw new Error("Documentation request may not contain credentials");
   }
-  assertSafeQueryValues(requested, "Documentation request");
+  assertCredentialFreeQueryParameters(requested, "Documentation request");
   if (requested.origin !== base.origin) {
     throw new Error("Documentation request escaped its configured origin");
   }
@@ -379,7 +556,10 @@ async function fetchBounded(url, { outputLimitBytes, timeoutMs, allowedBase }) {
       method: "GET",
       redirect: "error",
       signal: controller.signal,
-      headers: { Accept: "text/plain, text/html, application/json" },
+      headers: {
+        Accept:
+          "text/plain, text/markdown, text/html, application/xml, application/json",
+      },
     });
     if (!response.ok) {
       throw new Error(`Documentation source returned HTTP ${response.status}`);
@@ -453,6 +633,11 @@ function capabilityInput(capability, bindings) {
   return input;
 }
 
+function isMcpAvailabilityError(error) {
+  if (error?.name === "AbortError") return true;
+  return ["timeout", "unavailable"].includes(error?.mcpAvailability);
+}
+
 function stripMarkup(value) {
   return String(value)
     .replace(/<script\b[\s\S]*?<\/script>/giu, " ")
@@ -463,49 +648,106 @@ function stripMarkup(value) {
     .trim();
 }
 
-function searchIndexCandidates(html, baseUrl, query, limit = 10) {
-  const base = new URL(baseUrl);
+function normalizedSearchTokens(value) {
+  return String(value)
+    .replace(/([\p{Ll}\p{N}])(\p{Lu})/gu, "$1 $2")
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter((term) => term.length >= 2)
+    .map((term) => {
+      if (term.length > 4 && term.endsWith("ies")) {
+        return `${term.slice(0, -3)}y`;
+      }
+      if (term.length > 3 && term.endsWith("s") && !term.endsWith("ss")) {
+        return term.slice(0, -1);
+      }
+      return term;
+    });
+}
+
+function scopedIndexTarget(href, base) {
+  let target;
+  try {
+    target = new URL(href, base);
+  } catch {
+    return null;
+  }
+  if (!["http:", "https:"].includes(target.protocol)) return null;
+  if (target.username || target.password) return null;
+  try {
+    assertCredentialFreeQueryParameters(target, "Documentation index link");
+  } catch {
+    return null;
+  }
   const basePath = base.pathname.endsWith("/")
     ? base.pathname
     : `${base.pathname}/`;
-  const terms = [...new Set(query.toLowerCase().split(/[^\p{L}\p{N}]+/u))]
-    .filter((term) => term.length >= 2)
-    .slice(0, 12);
+  if (target.origin !== base.origin) {
+    const publishedPrefix = "/qaas-docs/";
+    if (!target.pathname.startsWith(publishedPrefix)) return null;
+    const transplanted = new URL(base);
+    transplanted.pathname =
+      `${basePath}${target.pathname.slice(publishedPrefix.length)}`;
+    target = transplanted;
+  }
+  if (
+    target.pathname !== base.pathname &&
+    !target.pathname.startsWith(basePath)
+  ) {
+    return null;
+  }
+  target.username = "";
+  target.password = "";
+  target.search = "";
+  target.hash = "";
+  return target;
+}
+
+function searchIndexCandidates(html, baseUrl, query, limit = 10) {
+  const base = new URL(baseUrl);
+  const terms = [...new Set(normalizedSearchTokens(query))].slice(0, 12);
   const candidates = [];
+  const addCandidate = (href, rawTitle) => {
+    const target = scopedIndexTarget(href, base);
+    if (!target) return;
+    const targetUrl = target.toString();
+    if (
+      Buffer.byteLength(targetUrl, "utf8") >
+      MAX_DOCUMENTATION_URL_BYTES
+    ) {
+      return;
+    }
+    const title = stripMarkup(rawTitle).slice(0, 240);
+    let decodedPath = target.pathname;
+    try {
+      decodedPath = decodeURIComponent(target.pathname);
+    } catch {
+      // Preserve the validated encoded path when it contains malformed escapes.
+    }
+    const tokens = new Set(normalizedSearchTokens(`${title} ${decodedPath}`));
+    const score = terms.reduce(
+      (total, term) => total + (tokens.has(term) ? 1 : 0),
+      0,
+    );
+    if (terms.length > 0 && score === 0) return;
+    candidates.push({
+      title: title || path.posix.basename(target.pathname) || "documentation",
+      url: targetUrl,
+      score,
+    });
+  };
   const anchor =
     /<a\b[^>]*\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))[^>]*>([\s\S]*?)<\/a>/giu;
   for (const match of html.matchAll(anchor)) {
-    const href = match[1] ?? match[2] ?? match[3] ?? "";
-    let target;
-    try {
-      target = new URL(href, base);
-    } catch {
-      continue;
-    }
-    if (
-      !["http:", "https:"].includes(target.protocol) ||
-      target.origin !== base.origin ||
-      (target.pathname !== base.pathname &&
-        !target.pathname.startsWith(basePath))
-    ) {
-      continue;
-    }
-    target.username = "";
-    target.password = "";
-    target.search = "";
-    target.hash = "";
-    const title = stripMarkup(match[4]).slice(0, 240);
-    const haystack = `${title} ${decodeURIComponent(target.pathname)}`.toLowerCase();
-    const score = terms.reduce(
-      (total, term) => total + (haystack.includes(term) ? 1 : 0),
-      0,
-    );
-    if (terms.length > 0 && score === 0) continue;
-    candidates.push({
-      title: title || path.posix.basename(target.pathname) || "documentation",
-      url: target.toString(),
-      score,
-    });
+    addCandidate(match[1] ?? match[2] ?? match[3] ?? "", match[4]);
+  }
+  const markdownLink = /\[([^\]\r\n]{1,240})\]\(([^)\s]+)\)/gu;
+  for (const match of html.matchAll(markdownLink)) {
+    addCandidate(match[2], match[1]);
+  }
+  const sitemapLocation = /<loc>\s*([^<\s]+)\s*<\/loc>/giu;
+  for (const match of html.matchAll(sitemapLocation)) {
+    addCandidate(match[1], match[1]);
   }
   return [...new Map(candidates.map((entry) => [entry.url, entry])).values()]
     .sort(
@@ -516,36 +758,189 @@ function searchIndexCandidates(html, baseUrl, query, limit = 10) {
     .slice(0, limit);
 }
 
+function documentationHttpStatus(error) {
+  const match = String(error?.message ?? "").match(
+    /Documentation source returned HTTP (\d{3})/u,
+  );
+  return match ? Number(match[1]) : null;
+}
+
+function isHttpDocumentationAvailabilityError(error) {
+  if (error?.name === "AbortError") return true;
+  const status = documentationHttpStatus(error);
+  if (
+    status === 404 ||
+    status === 408 ||
+    status === 425 ||
+    status === 429 ||
+    (status !== null && status >= 500)
+  ) {
+    return true;
+  }
+  return /(?:fetch failed|ECONN|ENOTFOUND|EAI_AGAIN|network|socket)/iu.test(
+    String(error?.message ?? ""),
+  );
+}
+
+function documentationAvailabilityCategory(error) {
+  if (
+    error?.name === "AbortError" ||
+    /timed?\s*out/iu.test(String(error?.message ?? ""))
+  ) {
+    return "timeout";
+  }
+  return documentationHttpStatus(error) === null ? "unavailable" : "http-error";
+}
+
+function documentationIndexUrl(baseUrl, name) {
+  const base = new URL(baseUrl);
+  const basePath = base.pathname.endsWith("/")
+    ? base.pathname
+    : `${base.pathname}/`;
+  base.pathname = `${basePath}${name}`;
+  base.search = "";
+  base.hash = "";
+  return base.toString();
+}
+
 export async function searchConfiguredDocumentationIndex(
   baseUrl,
   query,
   { outputLimitBytes = DEFAULT_OUTPUT_LIMIT, timeoutMs = 10_000 } = {},
 ) {
+  if (
+    typeof baseUrl !== "string" ||
+    Buffer.byteLength(baseUrl, "utf8") > MAX_DOCUMENTATION_URL_BYTES
+  ) {
+    throw new Error("Documentation base URL exceeds the 4 KiB URL bound");
+  }
   const effectiveOutputLimitBytes = Math.min(
     outputLimitBytes,
     DEFAULT_OUTPUT_LIMIT,
   );
-  const text = await fetchBounded(baseUrl, {
-    outputLimitBytes: effectiveOutputLimitBytes,
-    timeoutMs,
-    allowedBase: baseUrl,
-  });
-  const candidates = searchIndexCandidates(text, baseUrl, query);
-  const bounded = boundedExcerpt(
-    JSON.stringify(candidates),
-    effectiveOutputLimitBytes,
-  );
-  return {
+  const indexes = [
+    { kind: "llms", url: documentationIndexUrl(baseUrl, "llms.txt") },
+    { kind: "sitemap", url: documentationIndexUrl(baseUrl, "sitemap.xml") },
+    { kind: "homepage", url: baseUrl },
+  ];
+  let selected = null;
+  let lastAvailabilityError = null;
+  for (const index of indexes) {
+    let text;
+    try {
+      text = await fetchBounded(index.url, {
+        outputLimitBytes: DOCUMENTATION_INDEX_INPUT_LIMIT,
+        timeoutMs,
+        allowedBase: baseUrl,
+      });
+    } catch (error) {
+      if (!isHttpDocumentationAvailabilityError(error)) throw error;
+      lastAvailabilityError = error;
+      continue;
+    }
+    const candidates = searchIndexCandidates(text, baseUrl, query);
+    selected = { ...index, candidates };
+    if (candidates.length > 0) break;
+  }
+  if (!selected) {
+    throw (
+      lastAvailabilityError ??
+      new Error("Documentation index is unavailable")
+    );
+  }
+  const matchedCandidates = selected.candidates;
+  const baseResult = {
     kind: "configured-url-search",
     baseUrl,
     queryDigest: sha256(query.trim()),
-    candidateCount: candidates.length,
-    candidates,
-    excerptHash: bounded.excerptHash,
-    truncated: bounded.truncated,
-    byteLength: bounded.byteLength,
+    indexKind: selected.kind,
     requiresFocusedPage: true,
   };
+  let candidates = [];
+  for (const candidate of matchedCandidates) {
+    const tentativeCandidates = [...candidates, candidate];
+    const candidatePayload = JSON.stringify(tentativeCandidates);
+    const tentativeResult = {
+      ...baseResult,
+      candidateCount: tentativeCandidates.length,
+      candidates: tentativeCandidates,
+      excerptHash: sha256(candidatePayload),
+      truncated: tentativeCandidates.length < matchedCandidates.length,
+      byteLength: Buffer.byteLength(candidatePayload, "utf8"),
+    };
+    if (
+      Buffer.byteLength(JSON.stringify(tentativeResult), "utf8") >
+      effectiveOutputLimitBytes
+    ) {
+      break;
+    }
+    candidates = tentativeCandidates;
+  }
+  const candidatePayload = JSON.stringify(candidates);
+  const result = {
+    ...baseResult,
+    candidateCount: candidates.length,
+    candidates,
+    excerptHash: sha256(candidatePayload),
+    truncated: candidates.length < matchedCandidates.length,
+    byteLength: Buffer.byteLength(candidatePayload, "utf8"),
+  };
+  if (
+    Buffer.byteLength(JSON.stringify(result), "utf8") >
+    effectiveOutputLimitBytes
+  ) {
+    throw new Error(
+      "Documentation search result exceeds the configured output bound",
+    );
+  }
+  return result;
+}
+
+function boundResolvedSearchResult(result, outputLimitBytes) {
+  const bounded = {
+    ...result,
+    candidates: [...result.candidates],
+  };
+  const refreshCandidateMetadata = () => {
+    const payload = JSON.stringify(bounded.candidates);
+    bounded.candidateCount = bounded.candidates.length;
+    bounded.excerptHash = sha256(payload);
+    bounded.byteLength = Buffer.byteLength(payload, "utf8");
+  };
+  refreshCandidateMetadata();
+  while (
+    bounded.candidates.length > 0 &&
+    Buffer.byteLength(JSON.stringify(bounded), "utf8") > outputLimitBytes
+  ) {
+    bounded.candidates.pop();
+    refreshCandidateMetadata();
+    bounded.truncated = true;
+  }
+  if (Buffer.byteLength(JSON.stringify(bounded), "utf8") > outputLimitBytes) {
+    throw new Error(
+      "Documentation search result exceeds the configured output bound",
+    );
+  }
+  return bounded;
+}
+
+function documentationUrlWithinBase(candidateUrl, baseUrl) {
+  let candidate;
+  let base;
+  try {
+    candidate = new URL(candidateUrl);
+    base = new URL(baseUrl);
+  } catch {
+    return false;
+  }
+  const basePath = base.pathname.endsWith("/")
+    ? base.pathname
+    : `${base.pathname}/`;
+  return (
+    candidate.origin === base.origin &&
+    (candidate.pathname === base.pathname ||
+      candidate.pathname.startsWith(basePath))
+  );
 }
 
 async function hashFileStreaming(
@@ -597,6 +992,7 @@ export async function resolveDocumentationQuery({
   sources,
   callMcp = null,
   relativeUrl = null,
+  selectedSource = null,
   outputLimitBytes = DEFAULT_OUTPUT_LIMIT,
   timeoutMs = 10_000,
 }) {
@@ -621,57 +1017,122 @@ export async function resolveDocumentationQuery({
     outputLimitBytes,
     DEFAULT_OUTPUT_LIMIT,
   );
-  if (sources.mcp && typeof callMcp === "function") {
-    const capability = relativeUrl ? sources.mcp.read : sources.mcp.search;
-    const input = capabilityInput(
-      capability,
-      relativeUrl
-        ? {
-            identifier: relativeUrl,
-            limit: Math.min(
-              effectiveOutputLimitBytes,
-              capability.outputLimitBytes,
-            ),
-          }
-        : {
-            query,
-            limit: Math.min(10, capability.outputLimitItems ?? 10),
-          },
-    );
-    const results = await callMcp(capability, input);
-    const boundedSearch = boundedExcerpt(
-      JSON.stringify(results),
-      Math.min(effectiveOutputLimitBytes, capability.outputLimitBytes),
-    );
-    return {
-      kind: relativeUrl ? "mcp-read" : "mcp-search",
-      capabilityId: capability.id,
-      ...boundedSearch,
-    };
+  if (
+    selectedSource !== null &&
+    (typeof selectedSource !== "string" ||
+      !/^[a-z0-9][a-z0-9-]{0,63}$/u.test(selectedSource))
+  ) {
+    throw new Error("Documentation selectedSource is invalid");
   }
   const failures = [];
-  for (const baseUrl of [sources.primaryUrl, sources.secondaryUrl]) {
-    if (!baseUrl) continue;
+  if (
+    sources.mcp &&
+    typeof callMcp === "function" &&
+    selectedSource === null
+  ) {
+    try {
+      const capability = relativeUrl ? sources.mcp.read : sources.mcp.search;
+      const input = capabilityInput(
+        capability,
+        relativeUrl
+          ? {
+              identifier: relativeUrl,
+              limit: Math.min(
+                effectiveOutputLimitBytes,
+                capability.outputLimitBytes,
+              ),
+            }
+          : {
+              query,
+              limit: Math.min(10, capability.outputLimitItems ?? 10),
+            },
+      );
+      const results = await callMcp(capability, input);
+      const boundedSearch = boundedExcerpt(
+        JSON.stringify(results),
+        Math.min(effectiveOutputLimitBytes, capability.outputLimitBytes),
+      );
+      return {
+        kind: relativeUrl ? "mcp-read" : "mcp-search",
+        source: "wikiall-mcp",
+        capabilityId: capability.id,
+        ...boundedSearch,
+      };
+    } catch (error) {
+      if (!isMcpAvailabilityError(error)) throw error;
+      failures.push({
+        source: "wikiall-mcp",
+        category:
+          error?.name === "AbortError" ||
+          error?.mcpAvailability === "timeout"
+            ? "timeout"
+            : "unavailable",
+      });
+    }
+  }
+  const httpSources = Array.isArray(sources.httpSources)
+    ? sources.httpSources
+    : [
+        { source: "primary", baseUrl: sources.primaryUrl },
+        { source: "secondary", baseUrl: sources.secondaryUrl },
+      ].filter((entry) => entry.baseUrl);
+  let focusedHttpSources = httpSources;
+  if (relativeUrl && selectedSource !== null) {
+    focusedHttpSources = httpSources.filter(
+      (entry) => entry.source === selectedSource,
+    );
+    if (focusedHttpSources.length !== 1) {
+      throw new Error(
+        `Focused documentation source is unavailable: ${selectedSource}`,
+      );
+    }
+  } else if (relativeUrl) {
+    let absoluteUrl = null;
+    try {
+      absoluteUrl = new URL(relativeUrl).toString();
+    } catch {
+      // A relative identifier is safe only when one HTTP source is available.
+    }
+    if (absoluteUrl) {
+      focusedHttpSources = httpSources.filter((entry) =>
+        documentationUrlWithinBase(absoluteUrl, entry.baseUrl),
+      );
+      if (focusedHttpSources.length !== 1) {
+        throw new Error(
+          "Focused documentation URL must match exactly one configured source",
+        );
+      }
+    } else if (httpSources.length !== 1) {
+      throw new Error(
+        "Relative documentation identifiers require an exact selectedSource",
+      );
+    }
+  }
+  for (const { source, baseUrl } of focusedHttpSources) {
     if (!relativeUrl) {
       try {
-        return {
-          ...(await searchConfiguredDocumentationIndex(baseUrl, query, {
+        const searchResult = await searchConfiguredDocumentationIndex(
+          baseUrl,
+          query,
+          {
             outputLimitBytes: effectiveOutputLimitBytes,
             timeoutMs,
+          },
+        );
+        return boundResolvedSearchResult({
+          ...searchResult,
+          candidates: searchResult.candidates.map((candidate) => ({
+            ...candidate,
+            source,
           })),
+          source,
           priorFailures: failures,
-        };
+        }, effectiveOutputLimitBytes);
       } catch (error) {
+        if (!isHttpDocumentationAvailabilityError(error)) throw error;
         failures.push({
-          source: baseUrl === sources.primaryUrl ? "primary" : "secondary",
-          category:
-            error?.name === "AbortError"
-              ? "timeout"
-              : /HTTP \d{3}/u.test(error.message)
-                ? "http-error"
-                : /base path|origin/u.test(error.message)
-                  ? "scope-error"
-                  : "unavailable",
+          source,
+          category: documentationAvailabilityCategory(error),
         });
         continue;
       }
@@ -684,33 +1145,23 @@ export async function resolveDocumentationQuery({
       });
       return {
         kind: "http-read",
+        sourceKind: source,
         source: new URL(relativeUrl, baseUrl).toString(),
         ...boundedExcerpt(text, effectiveOutputLimitBytes),
         priorFailures: failures,
       };
     } catch (error) {
+      if (!isHttpDocumentationAvailabilityError(error)) throw error;
       failures.push({
-        source: baseUrl === sources.primaryUrl ? "primary" : "secondary",
-        category:
-          error?.name === "AbortError"
-            ? "timeout"
-            : /HTTP \d{3}/u.test(error.message)
-              ? "http-error"
-              : /base path|origin/u.test(error.message)
-                ? "scope-error"
-                : "unavailable",
+        source,
+        category: documentationAvailabilityCategory(error),
       });
     }
   }
   if (sources.zimPath) {
-    const resolved = await realpath(sources.zimPath);
-    return {
-      kind: "zim-available",
-      path: resolved,
-      artifactDigest: await hashFileStreaming(resolved),
-      requiresApprovedReader: true,
-      priorFailures: failures,
-    };
+    throw new Error(
+      "QAAS_DOCS_ZIM_PATH identifies an artifact but is not a documentation reader; configure an approved OpenZIM/WikiAll MCP with QAAS_DOCS_MCP_URL",
+    );
   }
   if (failures.length > 0) {
     throw new Error(
@@ -720,6 +1171,8 @@ export async function resolveDocumentationQuery({
     );
   }
   throw new Error(
-    "The built-in QaaS documentation source is unavailable.",
+    sources.airgap?.enabled
+      ? "No configured air-gapped QaaS documentation source is available; public fallback is disabled"
+      : "The built-in QaaS documentation source is unavailable.",
   );
 }

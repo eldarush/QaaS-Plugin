@@ -1,0 +1,6 @@
+# Optional operator-local build configuration.
+site.config.local.json
+
+# Temporary files from interrupted atomic writes.
+dist/*.tmp
+dist/assets/*.tmp

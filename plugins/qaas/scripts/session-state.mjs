@@ -48,6 +48,7 @@ const REFRESH_APPROVAL_KINDS = Object.freeze([
   "source-checkout",
   "source-read",
   "capabilities",
+  "docs-mcp-probe",
   "readiness-fact",
   "query",
 ]);
@@ -75,7 +76,7 @@ const MANUAL_STOP_COMMANDS = Object.freeze({
     startPhases: Object.freeze(["PLAN_APPROVED"]),
   }),
 });
-const MAX_STOP_QUESTION_BYTES = 2_400;
+const MAX_STOP_QUESTION_BYTES = 600;
 
 function sessionOutput(eventName, additionalContext, systemMessage = null) {
   return {
@@ -123,9 +124,16 @@ function corroboratesOneFocusedQuestion(value) {
   const message = boundedStopMessage(value);
   if (!message) return false;
   const questionMarks = message.match(/[?？؟]/gu) ?? [];
+  const packedSecondQuestion =
+    /\b(?:and|also|plus|then)\s+(?:what|which|who|where|when|why|how|does|do|is|are|can|should|will|may|would|could)\b/iu;
   return (
     questionMarks.length === 1 &&
-    /[?？؟](?:[*_`]*)$/u.test(message)
+    /[?？؟](?:[*_`]*)$/u.test(message) &&
+    !/[\r\n]/u.test(message) &&
+    !/[;]/u.test(message) &&
+    !/(?:^|\s)(?:[-+*]|\d+[.)])\s+/u.test(message) &&
+    !/\b(?:first|second|third|additionally)\b/iu.test(message) &&
+    !packedSecondQuestion.test(message)
   );
 }
 

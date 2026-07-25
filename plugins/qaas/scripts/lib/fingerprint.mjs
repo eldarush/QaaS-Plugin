@@ -206,6 +206,8 @@ export async function createFingerprint({
   const effectiveExclusions = [
     ".git",
     ".claude/qaas/state",
+    ".claude/qaas/fingerprint.json",
+    ".qaas-user-evidence",
     ...exclusions.map(validateRelativeInput),
   ];
   const pathsToCollect =
@@ -335,7 +337,11 @@ export function compareFingerprints(expected, actual) {
   for (const [entryPath, entry] of actualMap) {
     const prior = expectedMap.get(entryPath);
     if (!prior) added.push(entryPath);
-    else if (prior.sha256 !== entry.sha256 || prior.size !== entry.size) {
+    else if (
+      prior.sha256 !== entry.sha256 ||
+      prior.size !== entry.size ||
+      prior.linkTarget !== entry.linkTarget
+    ) {
       changed.push(entryPath);
     }
   }

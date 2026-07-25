@@ -100,7 +100,8 @@ under `qaas/` hold detailed facts:
 - `integrations.md`: non-secret endpoints and credential-variable names.
 - `decisions.md`: confirmed decisions and evidence.
 - `unknowns.md`: open and resolved questions without erasing history.
-- `fingerprint.json`: the approved project/context binding.
+- `fingerprint.json`: a generated mirror of the live approved project/context
+  binding, written only when exact context commit succeeds.
 
 Task-specific files under `state/tasks/<task-id>/` contain request, readiness,
 plan, execution plan, optional separately reviewed query plan, approval mirror,

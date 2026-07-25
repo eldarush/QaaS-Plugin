@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/eldarush/QaaS-Plugin/schemas/mutation-plan.schema.json",
+  "$id": "https://github.com/TheSmokeTeam/QaaS-Plugin/schemas/mutation-plan.schema.json",
   "title": "QaaS non-deleting infrastructure mutation plan",
   "type": "object",
   "additionalProperties": false,

@@ -20,9 +20,16 @@ typed-check outcomes, redacted excerpt/hash, and one-use approval consumption.
 It never records a resolved secret-bearing endpoint, credential value, or raw
 tool response. Execution evidence alone cannot authorize the query.
 
-Static verification requires successful approved restore/build/template checks, no relevant error or warning, and a rendered configuration matching intent. Label it `implemented, not run`.
+Automatic static verification is unavailable in this release because no
+demonstrably OS-confined trusted runner exists. A user may run the exact
+reviewed restore/build/template vectors and provide the helper's bounded
+evidence document. Record it as user-attested diagnostic evidence; do not label
+it trusted-runner or automated proof.
 
-Runtime verification additionally requires the exact approved run and agreed oracle. A zero process exit alone does not prove tested-system success when the oracle requires outputs, assertions, absence checks, or other evidence.
+Runtime evidence likewise comes only from an exact user-run handoff and bounded
+import. Import enters diagnosis and cannot produce an automated `VERIFIED`
+claim. A zero process exit alone does not prove tested-system success when the
+oracle requires outputs, assertions, absence checks, or other evidence.
 
 Diagnosis classifies evidence as test, configuration, hook, tested-system, deployment, environment, tooling, or unknown. Correlation is not proof; state uncertainty and alternatives. Disclose earlier failures even after a successful retry.
 

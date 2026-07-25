@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/eldarush/QaaS-Plugin/schemas/task-plan.schema.json",
+  "$id": "https://github.com/TheSmokeTeam/QaaS-Plugin/schemas/task-plan.schema.json",
   "title": "QaaS implementation plan",
   "type": "object",
   "additionalProperties": false,
@@ -57,11 +57,22 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["path", "operation", "intent"],
+        "required": ["path", "operation", "intent", "targetSha256"],
         "properties": {
           "path": { "$ref": "#/$defs/relativePath" },
           "operation": { "enum": ["create", "modify"] },
-          "intent": { "type": "string", "minLength": 1 }
+          "intent": { "type": "string", "minLength": 1 },
+          "targetSha256": {
+            "allOf": [
+              { "$ref": "#/$defs/digest" },
+              {
+                "not": {
+                  "const": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                }
+              }
+            ],
+            "description": "SHA-256 of the exact complete UTF-8 file bytes after this create or modify operation."
+          }
         }
       }
     },

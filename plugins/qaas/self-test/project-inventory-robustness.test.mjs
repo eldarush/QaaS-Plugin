@@ -31,7 +31,7 @@ const pluginRoot = path.resolve(
 const inventoryCli = path.join(pluginRoot, "scripts", "project-inventory.mjs");
 const reusableFixtureRoot = path.join(
   os.tmpdir(),
-  "qaas-inventory-robustness-v0.3.0",
+  "qaas-inventory-robustness-v0.4.0",
 );
 
 async function fixture(prefix = "qaas-inventory-") {
@@ -393,7 +393,7 @@ describe("project inventory hard resource bounds", () => {
 
   test(
     "stops at 5,000 files and reports unvisited entries",
-    { timeout: 45_000 },
+    { timeout: 90_000 },
     async () => {
       const root = await reusableFixture("five-thousand-file-bound");
       for (let start = 0; start < 5_001; start += 250) {

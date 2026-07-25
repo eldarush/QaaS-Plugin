@@ -1,0 +1,111 @@
+{
+  "schemaVersion": "1.1.0",
+  "authority": "candidate-evidence-only",
+  "root": ".",
+  "limits": {
+    "maxEntries": 20000,
+    "maxFiles": 5000,
+    "maxFileBytes": 65536,
+    "maxReadBytes": 4194304,
+    "maxPathsPerCategory": 12,
+    "maxEvidencePerSignal": 4,
+    "maxPackageReferences": 24,
+    "maxPathBytes": 240,
+    "maxMetadataBytes": 160,
+    "maxOutputBytes": 24576
+  },
+  "truncated": false,
+  "reportingTruncated": false,
+  "counts": {
+    "entriesSeen": 4,
+    "filesSeen": 3,
+    "filesRead": 3,
+    "bytesRead": 142,
+    "skippedDirectories": 0,
+    "skippedLinks": 0,
+    "skippedOversizedFiles": 0,
+    "skippedUnreadableEntries": 0,
+    "skippedAfterLimit": 0,
+    "skippedAfterLimitCapped": false
+  },
+  "dropped": {
+    "filePaths": 0,
+    "signalEvidence": 0,
+    "signals": 0,
+    "packageReferences": 0,
+    "caseCollisionCandidates": 0,
+    "skippedDirectoryPaths": 0,
+    "invalidPackageIds": 0,
+    "invalidPackageVersions": 0,
+    "sensitivePackageIds": 0,
+    "sensitivePackageVersions": 0,
+    "sanitizedPaths": 0,
+    "sanitizedStrings": 0,
+    "truncatedStrings": 0,
+    "outputItems": 0
+  },
+  "skipped": {
+    "generatedOrVendorDirectories": []
+  },
+  "pathTraits": {
+    "spaces": false,
+    "nonAscii": false,
+    "caseCollisionCandidates": []
+  },
+  "files": {
+    "infrastructure": [
+      "service.service"
+    ],
+    "qaasConfiguration": [
+      "smoke.qaas.yaml"
+    ],
+    "samples": [
+      "TestData/order-input.json"
+    ]
+  },
+  "signals": {
+    "composition": [
+      {
+        "value": "anchors",
+        "evidence": [
+          "smoke.qaas.yaml"
+        ]
+      }
+    ],
+    "infrastructure": [
+      {
+        "value": "vm-service",
+        "evidence": [
+          "service.service"
+        ]
+      }
+    ],
+    "protocols": [
+      {
+        "value": "http",
+        "evidence": [
+          "smoke.qaas.yaml"
+        ]
+      }
+    ],
+    "serializations": [
+      {
+        "value": "json",
+        "evidence": [
+          "TestData/order-input.json",
+          "smoke.qaas.yaml"
+        ]
+      }
+    ],
+    "testIntents": [
+      {
+        "value": "smoke",
+        "evidence": [
+          "smoke.qaas.yaml"
+        ]
+      }
+    ]
+  },
+  "packageReferences": [],
+  "requiredInterpretation": "Treat every role and signal as tentative. Ask for the user's short explanation before assigning semantics; documentation and approved evidence still govern readiness."
+}

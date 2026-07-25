@@ -28,15 +28,18 @@ Produce a candidate plan containing:
 - exact supplied restore/build/template commands and generated-output classes
 - risks, residual risks, and expected diff envelope
 - verification steps and static-versus-runtime boundary
-- read the signed active authority's
-  `authorityCapabilities.writeContentBinding`; it is `false` in this release,
-  so emit no target bytes or write-digest commands; only if a future active
-  authority reports `true`, draft the exact complete target bytes for every
-  planned write without writing them, compute
-  each byte sequence's SHA-256, and include exactly one
-  `write <add|modify> <path> sha256:<digest>` command for it; use `add` only
-  for `paths.create`, `modify` only for `paths.modify`, and emit no unscoped,
-  missing, or duplicate path
+- require the signed active authority's
+  `authorityCapabilities.writeContentBinding` to be `true`; otherwise return
+  `BLOCKED`. Draft the exact complete target bytes for every planned write
+  without writing them to the project; every write must already be scoped.
+  Preserve exact UTF-8 bytes,
+  line endings, and any BOM. Do not calculate SHA-256 mentally: return the
+  exact target to the coordinator, which uses the local deterministic encoder
+  and puts its exact-file checksum in the structured
+  `changes[].targetSha256` field. Use operation `create` only for
+  `paths.create`, `modify` only for `paths.modify`, and emit exactly one change
+  per path with no missing, duplicate, stale, or out-of-scope binding. Never
+  represent the binding as a command string
 - structured semantic contracts that preserve all disclosed literal tokens
   and array element order exactly; do not paraphrase, substitute synonyms,
   reorder, or normalize

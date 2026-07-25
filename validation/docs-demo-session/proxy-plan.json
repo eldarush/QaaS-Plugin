@@ -1,0 +1,66 @@
+{
+  "schemaVersion": "1.0",
+  "evidenceType": "controlled-codex-proxy-plan",
+  "goal": "Add one focused synthetic HTTP/JSON smoke-test evidence set for a high-risk order and a review-required oracle.",
+  "inputs": {
+    "inventory": "raw/project-inventory.before.json",
+    "routeSelection": "raw/interview-routes.json",
+    "operatorFacts": [
+      "smoke.qaas.yaml is the active local pattern for this synthetic fixture",
+      "protected-demo-id must remain unchanged",
+      "the fixture uses neither Common Hooks nor modules",
+      "this demo stops at static fixture verification and does not run QaaS"
+    ]
+  },
+  "changes": {
+    "create": [
+      {
+        "path": "demo-project/Cases/order-review.qaas.yaml",
+        "intent": "Reuse only the protocol, serialization, kind, anchor, and delay pattern already present in smoke.qaas.yaml."
+      },
+      {
+        "path": "demo-project/TestData/order-review-input.json",
+        "intent": "Record the approved high-risk input while preserving the protected identifier."
+      },
+      {
+        "path": "demo-project/Expected/order-review-output.json",
+        "intent": "Record the approved reviewRequired=true static oracle."
+      }
+    ],
+    "modify": [],
+    "unchanged": [
+      "demo-project/service.service",
+      "demo-project/smoke.qaas.yaml",
+      "demo-project/TestData/order-input.json"
+    ],
+    "forbidden": [
+      "QaaS framework or package changes",
+      "environment mutation",
+      "QaaS runtime or test execution",
+      "deletion, move, or rename"
+    ]
+  },
+  "verification": {
+    "command": "node validation/docs-demo-session/verify-demo.mjs",
+    "claims": [
+      "baseline files retain their recorded SHA-256 values",
+      "new JSON files parse and contain the approved values",
+      "new YAML reuses only the observed synthetic fixture pattern"
+    ]
+  },
+  "approval": {
+    "requiredBeforeWrites": true,
+    "reviewChoices": [
+      "Approve",
+      "Revise",
+      "Cancel"
+    ],
+    "controlledDemoResponse": "Approve",
+    "signedPluginApprovalCreated": false
+  },
+  "limitations": [
+    "This is a Codex proxy demonstration, not a Claude Code session.",
+    "The public project-shape fixture does not establish QaaS semantics.",
+    "No QaaS runtime, target environment, broker, service, or external oracle was executed."
+  ]
+}

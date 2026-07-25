@@ -92,6 +92,16 @@ async function recordRejectedApproval(
       to: null,
       clear: ["capabilities"],
     },
+    "docs-mcp-probe": {
+      phases: [
+        "DISCOVERING",
+        "CONTEXT_REVIEW",
+        "PROJECT_READY",
+        "TASK_DISCOVERY",
+      ],
+      to: null,
+      clear: ["docs-mcp-probe"],
+    },
     "source-checkout": {
       phases: ["DISCOVERING"],
       to: null,
@@ -224,6 +234,12 @@ export async function handlePostToolUse(event, overrides = {}) {
               "CONTEXT_REVIEW",
               "PROJECT_READY",
               "TASK_DISCOVERY"
+            ],
+            "docs-mcp-probe": [
+              "DISCOVERING",
+              "CONTEXT_REVIEW",
+              "PROJECT_READY",
+              "TASK_DISCOVERY",
             ],
             "source-checkout": ["DISCOVERING"],
             "source-read": [
@@ -378,7 +394,7 @@ export async function handlePostToolUse(event, overrides = {}) {
     try {
       classification = await classifyToolCall(
         syntheticPreEvent,
-        context,
+        { ...context, postExecutionReplay: true },
         authority,
       );
     } catch (error) {
@@ -438,6 +454,7 @@ export async function handlePostToolUse(event, overrides = {}) {
           stateRecord.payload,
           token,
           context,
+          classification,
         ),
       };
     }

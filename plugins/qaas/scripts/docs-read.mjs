@@ -20,6 +20,7 @@ export async function runDocsRead(argv = process.argv.slice(2), env = process.en
     args["timeout-ms"] === undefined ? 10_000 : Number(args["timeout-ms"]);
   let capabilityRegistry = null;
   let approvedTransport = null;
+  let probeEvidence = null;
   if (typeof args["session-handle"] === "string") {
     const context = await runtimeContext(env);
     await activeSession(context, args["session-handle"]);
@@ -34,14 +35,27 @@ export async function runDocsRead(argv = process.argv.slice(2), env = process.en
         { required: false },
       )
     )?.payload ?? null;
+    probeEvidence = (
+      await context.authority.readSigned(
+        "integrations/docs-mcp-probe.json",
+        { required: false },
+      )
+    )?.payload ?? null;
   }
-  const sources = resolveDocumentationSources({ env, capabilityRegistry });
+  const sources = resolveDocumentationSources({
+    env,
+    capabilityRegistry,
+    probeEvidence,
+    approvedTransport,
+  });
   return resolveDocumentationQuery({
     query: args.query,
     sources,
     relativeUrl:
       typeof args["relative-url"] === "string" ? args["relative-url"] : null,
-    callMcp: sources.mcp
+    selectedSource:
+      typeof args.source === "string" ? args.source : null,
+    callMcp: sources.mcp && sources.mcpUrl
       ? createStreamableMcpCaller({
           env,
           timeoutMs,

@@ -1,7 +1,12 @@
 import { readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { safeEqualHex, sha256 } from "./canonical-json.mjs";
+import {
+  canonicalDigest,
+  isSha256,
+  safeEqualHex,
+  sha256,
+} from "./canonical-json.mjs";
 import {
   findApprovalChallenge,
   findApprovalByDigest,
@@ -75,10 +80,83 @@ const SESSION_HANDLE_HELPERS = new Set([
   "workflow-authority.mjs",
   "run-approved.mjs",
   "docs-read.mjs",
+  "docs-mcp-discover.mjs",
   "source-read.mjs",
   "source-checkout.mjs",
   "query-approved.mjs",
 ]);
+
+function exactOccurrenceOffsets(content, needle, maximum = 2) {
+  const offsets = [];
+  let cursor = 0;
+  while (offsets.length < maximum) {
+    const offset = content.indexOf(needle, cursor);
+    if (offset < 0) break;
+    offsets.push(offset);
+    cursor = offset + 1;
+  }
+  return offsets;
+}
+
+async function exactProjectWriteTarget(toolName, input, targetPath) {
+  if (toolName === "NotebookEdit") {
+    throw new Error(
+      "NotebookEdit project writes are denied because the hook cannot deterministically reconstruct the complete target notebook bytes",
+    );
+  }
+  if (toolName === "Write") {
+    if (typeof input.content !== "string" || input.content.length === 0) {
+      throw new Error("Write requires non-empty exact UTF-8 target content");
+    }
+    return {
+      operation: "create",
+      targetSha256: sha256(Buffer.from(input.content, "utf8")),
+    };
+  }
+  if (
+    typeof input.old_string !== "string" ||
+    input.old_string.length === 0
+  ) {
+    throw new Error("Edit requires one non-empty exact old_string");
+  }
+  if (typeof input.new_string !== "string") {
+    throw new Error("Edit requires an exact new_string");
+  }
+  if (
+    input.replace_all !== undefined &&
+    typeof input.replace_all !== "boolean"
+  ) {
+    throw new Error("Edit replace_all must be a boolean when present");
+  }
+  const existingBytes = await readFile(targetPath);
+  const existing = existingBytes.toString("utf8");
+  if (!Buffer.from(existing, "utf8").equals(existingBytes)) {
+    throw new Error(
+      "Edit target is not valid UTF-8; exact resulting text bytes cannot be proven",
+    );
+  }
+  const offsets = exactOccurrenceOffsets(existing, input.old_string);
+  if (offsets.length === 0) {
+    throw new Error("Edit old_string is missing from the current target");
+  }
+  if (offsets.length > 1) {
+    throw new Error(
+      "Edit old_string is ambiguous; replace_all and multi-match edits are denied in favor of one bounded minimal edit",
+    );
+  }
+  const offset = offsets[0];
+  const target =
+    existing.slice(0, offset) +
+    input.new_string +
+    existing.slice(offset + input.old_string.length);
+  if (target.length === 0) {
+    throw new Error("Edit would clear or truncate the complete file");
+  }
+  return {
+    operation: "modify",
+    targetSha256: sha256(Buffer.from(target, "utf8")),
+  };
+}
 
 function normalize(value) {
   const resolved = path.resolve(value);
@@ -130,7 +208,7 @@ export function hookEnvironment(event, overrides = {}) {
     projectRoot,
     pluginRoot,
     pluginData: overrides.pluginData ?? env.CLAUDE_PLUGIN_DATA ?? null,
-    pluginVersion: overrides.pluginVersion ?? "0.3.0",
+    pluginVersion: overrides.pluginVersion ?? "0.4.0",
   };
 }
 
@@ -338,6 +416,7 @@ const READ_ONLY_HELPERS = new Set([
   "validate-plugin.mjs",
   "check-context-budget.mjs",
   "docs-read.mjs",
+  "docs-mcp-discover.mjs",
   "source-read.mjs",
   "source-checkout.mjs",
   "workflow-authority.mjs",
@@ -405,12 +484,16 @@ async function classifyPluginHelper(command, input, context) {
     quoteProcessArgument(absoluteScript),
     ...args.map(quoteProcessArgument),
   ].join(" ");
-  const configuredSource = ["docs-read.mjs", "source-read.mjs"].includes(
-    helper,
-  );
+  const configuredSource = [
+    "docs-read.mjs",
+    "docs-mcp-discover.mjs",
+    "source-read.mjs",
+  ].includes(helper);
   const source =
     helperNamedArgument(args, "source") ??
-    (helper === "docs-read.mjs" ? "qaas-docs" : null);
+    (["docs-read.mjs", "docs-mcp-discover.mjs"].includes(helper)
+      ? "qaas-docs"
+      : null);
   const sourceConfigurationNames = {
     gitlab: [],
     artifactory: [],
@@ -854,32 +937,25 @@ export async function classifyToolCall(event, context, authority = null) {
     const checked = await validateProjectPath(paths[0].value, context, {
       write: true,
     });
-    if (toolName === "NotebookEdit" && input.edit_mode === "delete") {
-      throw new Error("Notebook cell deletion is denied");
+    if (toolName === "NotebookEdit") {
+      throw new Error(
+        "NotebookEdit is denied because complete target notebook bytes cannot be deterministically reconstructed",
+      );
     }
     if (
-      (toolName === "Write" &&
-        (typeof input.content !== "string" || input.content.length === 0)) ||
-      (toolName === "NotebookEdit" &&
-        typeof input.cell_source === "string" &&
-        input.cell_source.length === 0)
+      toolName === "Write" &&
+      (typeof input.content !== "string" || input.content.length === 0)
     ) {
       throw new Error("Clearing or truncating project content is denied");
     }
     if (
       toolName === "Edit" &&
       typeof input.new_string === "string" &&
-      input.new_string.length === 0
+      input.new_string.length === 0 &&
+      context.postExecutionReplay !== true
     ) {
       if (typeof input.old_string !== "string" || input.old_string.length === 0) {
         throw new Error("Empty edit replacement is malformed");
-      }
-      const existing = await readFile(checked.path, "utf8");
-      const next = input.replace_all
-        ? existing.split(input.old_string).join("")
-        : existing.replace(input.old_string, "");
-      if (next.length === 0) {
-        throw new Error("Edit would clear or truncate the complete file");
       }
     }
     for (const field of ["content", "new_string", "cell_source"]) {
@@ -896,7 +972,8 @@ export async function classifyToolCall(event, context, authority = null) {
     if (
       toolName === "Edit" &&
       typeof input.old_string === "string" &&
-      input.old_string.length > 0
+      input.old_string.length > 0 &&
+      context.postExecutionReplay !== true
     ) {
       const existing = await readFile(checked.path, "utf8");
       if (
@@ -947,11 +1024,19 @@ export async function classifyToolCall(event, context, authority = null) {
         "QaaS project context writes are limited to .claude/CLAUDE.md and .claude/qaas/**",
       );
     }
+    const writeBinding =
+      context.postExecutionReplay === true
+        ? null
+        : await exactProjectWriteTarget(toolName, input, checked.path);
+    const operation = toolName === "Write" ? "create" : "modify";
     return {
       actionClass: relative === ".claude" || relative.startsWith(".claude/")
         ? "context-write"
         : "project-write",
       paths: [{ value: checked.path }],
+      relativePath: relative,
+      operation,
+      ...(writeBinding ?? {}),
     };
   }
   if (SHELL_TOOLS.has(toolName)) {
@@ -1029,6 +1114,24 @@ async function preauthorizationScope(authority, actionClass, approvalDigest) {
     ) {
       throw new Error("Approved implementation plan artifact is stale");
     }
+    const expectedWriteBindings = (plan.payload.document.changes ?? [])
+      .map(({ path: targetPath, operation, targetSha256 }) => ({
+        path: targetPath,
+        operation,
+        targetSha256,
+      }))
+      .sort((left, right) =>
+        left.path < right.path ? -1 : left.path > right.path ? 1 : 0,
+      );
+    if (
+      !Array.isArray(review.payload.writeBindings) ||
+      !safeEqualHex(
+        canonicalDigest(review.payload.writeBindings),
+        canonicalDigest(expectedWriteBindings),
+      )
+    ) {
+      throw new Error("Approved implementation review lacks exact write bindings");
+    }
     return {
       allowedPaths: [
         ...(plan.payload.document.paths?.create ?? []),
@@ -1036,6 +1139,7 @@ async function preauthorizationScope(authority, actionClass, approvalDigest) {
       ],
       createPaths: plan.payload.document.paths?.create ?? [],
       modifyPaths: plan.payload.document.paths?.modify ?? [],
+      writeBindings: review.payload.writeBindings,
       generatedOutputs: plan.payload.document.generatedOutputs ?? [],
       planId: plan.payload.document.planId,
     };
@@ -1085,6 +1189,97 @@ async function preauthorizationScope(authority, actionClass, approvalDigest) {
     return { mutationId: mutation.payload.document.mutationId };
   }
   throw new Error(`No deterministic preauthorization scope for ${actionClass}`);
+}
+
+function normalizeScopedProjectPath(value) {
+  const slashed = String(value).replaceAll("\\", "/");
+  return process.platform === "win32" ? slashed.toLowerCase() : slashed;
+}
+
+export function assertExactProjectWriteBinding(classification, scope) {
+  if (classification.actionClass !== "project-write") return;
+  if (
+    typeof classification.relativePath !== "string" ||
+    !["create", "modify"].includes(classification.operation) ||
+    !isSha256(classification.targetSha256)
+  ) {
+    throw new Error(
+      "Project write classification lacks an exact resulting-byte binding",
+    );
+  }
+  const binding = exactScopedWriteBinding(
+    classification.relativePath,
+    scope,
+  );
+  if (binding.operation !== classification.operation) {
+    throw new Error(
+      `Write operation does not match approved ${binding.operation} binding for ${classification.relativePath}`,
+    );
+  }
+  if (
+    !isSha256(binding.targetSha256) ||
+    !safeEqualHex(binding.targetSha256, classification.targetSha256)
+  ) {
+    throw new Error(
+      `Exact resulting bytes do not match approved targetSha256 for ${classification.relativePath}`,
+    );
+  }
+}
+
+function exactScopedWriteBinding(relativePath, scope) {
+  if (!Array.isArray(scope?.writeBindings)) {
+    throw new Error("Approved plan scope lacks exact writeBindings");
+  }
+  const relative = normalizeScopedProjectPath(relativePath);
+  const matches = scope.writeBindings.filter(
+    (entry) =>
+      entry &&
+      typeof entry.path === "string" &&
+      normalizeScopedProjectPath(entry.path) === relative,
+  );
+  if (matches.length !== 1) {
+    throw new Error(
+      `Approved plan must contain exactly one target-byte binding for ${relativePath}`,
+    );
+  }
+  return matches[0];
+}
+
+export async function assertAppliedProjectWriteBinding(
+  classification,
+  scope,
+) {
+  if (classification.actionClass !== "project-write") return;
+  if (
+    typeof classification.relativePath !== "string" ||
+    !["create", "modify"].includes(classification.operation)
+  ) {
+    throw new Error(
+      "Completed project write lacks an exact path and operation classification",
+    );
+  }
+  const binding = exactScopedWriteBinding(
+    classification.relativePath,
+    scope,
+  );
+  if (binding.operation !== classification.operation) {
+    throw new Error(
+      `Completed write operation does not match approved ${binding.operation} binding for ${classification.relativePath}`,
+    );
+  }
+  const targetPath = classification.paths?.[0]?.value;
+  if (typeof targetPath !== "string") {
+    throw new Error("Completed project write lacks one exact target path");
+  }
+  const appliedBytes = await readFile(targetPath);
+  if (
+    !isSha256(binding.targetSha256) ||
+    !safeEqualHex(binding.targetSha256, sha256(appliedBytes))
+  ) {
+    throw new Error(
+      `Applied file bytes do not match approved targetSha256 for ${classification.relativePath}`,
+    );
+  }
 }
 
 async function hooksAttested(authority, event, context) {
@@ -1264,6 +1459,7 @@ export async function authorizeToolCall(event, context, authority, classificatio
       classification.actionClass,
       approvalDigest,
     );
+    assertExactProjectWriteBinding(classification, scope);
     await issuePreauthorization(authority, {
       toolUseId: event.tool_use_id,
       toolName: event.tool_name,
@@ -1335,6 +1531,7 @@ export async function authorizeToolCall(event, context, authority, classificatio
         }
       }
     }
+    assertExactProjectWriteBinding(classification, token.scope);
   }
   return token;
 }
@@ -1391,8 +1588,12 @@ export async function updateWorkingFingerprint(
   state,
   token,
   context,
+  classification = null,
 ) {
   if (!["context-write", "project-write"].includes(token.actionClass)) return state;
+  if (token.actionClass === "project-write") {
+    await assertAppliedProjectWriteBinding(classification, token.scope);
+  }
   const stage =
     token.actionClass === "context-write"
       ? "onboardingFingerprint"

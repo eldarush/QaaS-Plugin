@@ -1,0 +1,16 @@
+{
+  "name": "qaas-plugin-docs",
+  "version": "0.4.0",
+  "private": true,
+  "description": "Dependency-free static documentation site for QaaS Plugin.",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "serve": "node scripts/server.mjs",
+    "test": "node --test",
+    "check": "npm run build && npm test"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -10,11 +10,16 @@ readiness, recognize approval, or perform a transition.
 | `doctor` | any | same state plus read-only findings |
 | `onboard` | `UNONBOARDED`, `DISCOVERING`, `CONTEXT_REVIEW`, `STALE` | `PROJECT_READY` after approved context |
 | `plan` | `PROJECT_READY`, `TASK_DISCOVERY`, `PLAN_REVIEW` | `PLAN_APPROVED` after exact-plan approval |
-| `implement` | `PLAN_APPROVED`, `IMPLEMENTING`, `BUILD_VERIFIED`, `TEMPLATE_VERIFIED` | `IMPLEMENTED_NOT_RUN` |
-| `run` | `IMPLEMENTED_NOT_RUN`, `EXECUTION_REVIEW`, `MUTATION_REVIEW`, `MUTATION_APPROVED`, `EXECUTION_APPROVED`, `EXECUTING` | `VERIFIED` or `DIAGNOSING` |
+| `implement` | `PLAN_APPROVED`, `IMPLEMENTING`, `BUILD_VERIFIED` | exact user-run handoffs; successful bounded template evidence reaches `IMPLEMENTED_NOT_RUN` |
+| `run` | `IMPLEMENTED_NOT_RUN`, `EXECUTION_REVIEW`, `MUTATION_REVIEW`, `MUTATION_APPROVED`, `EXECUTION_APPROVED`, `EXECUTING` | exact user-run handoff; bounded imported run evidence enters `DIAGNOSING` |
 | `diagnose` | `EXECUTING`, `DIAGNOSING`, `REPAIRING` | diagnosis, approved repair loop, revised plan, or blocker |
 
 An unexpected relevant change transitions to `STALE`, revokes dependent approvals, and permits read-only investigation. The coordinator shows changed paths, reopens affected context with one question at a time, and obtains a new plan approval when scope or semantics changed.
+
+This release has no OS-confined trusted runner. The plugin never automatically
+launches restore, build, template, test, mutation, or comparable
+project/external code. User-run imports are deliberately not an automated path
+to `VERIFIED`.
 
 An unauthorized approval-requiring action, protected-state change, or integrity failure transitions to `SAFETY_VIOLATION`. Only ordinary read-only investigation remains legal.
 

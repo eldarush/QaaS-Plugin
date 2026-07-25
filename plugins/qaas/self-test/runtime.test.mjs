@@ -24,6 +24,7 @@ import {
   canonicalJson,
   sha256,
 } from "../scripts/lib/canonical-json.mjs";
+import { compareFingerprints } from "../scripts/lib/fingerprint.mjs";
 import {
   analyzeProcessVector,
   analyzeShellCommand,
@@ -35,6 +36,8 @@ import {
   validateTaskPlan,
 } from "../scripts/lib/plan-validation.mjs";
 import {
+  assertAppliedProjectWriteBinding,
+  assertExactProjectWriteBinding,
   classifyToolCall,
   hookEnvironment,
 } from "../scripts/lib/hook-runtime.mjs";
@@ -85,7 +88,15 @@ import {
 import {
   createStreamableMcpCaller,
   describeMcpTransport,
+  discoverStreamableMcpTools,
 } from "../scripts/lib/streamable-mcp-client.mjs";
+import {
+  DEFAULT_DOCS_MCP_PROBE_BOUNDS,
+  DOCS_MCP_PROBE_DEFINITION,
+  DOCS_MCP_PROBE_OPERATIONS,
+  validateDocsMcpProbeEvidence,
+} from "../scripts/lib/docs-mcp-probe.mjs";
+import { runDocsMcpDiscover } from "../scripts/docs-mcp-discover.mjs";
 import {
   commitCheckpoint,
   commitTransition,
@@ -98,6 +109,7 @@ import {
   toolInputDigest,
 } from "../scripts/lib/approval-authority.mjs";
 import { mirrorProjectState } from "../scripts/lib/project-state-mirror.mjs";
+import { prepareSafeProjectWritePath } from "../scripts/lib/safe-project-write.mjs";
 import {
   captureProcessFingerprint,
   captureVerificationArtifacts,
@@ -201,6 +213,7 @@ function taskPlanFixture({
         path: changedPath,
         operation: "modify",
         intent: "Apply the exact reviewed fixture change",
+        targetSha256: sha256(`target bytes for ${changedPath}`),
       },
     ],
     dependencies: [],
@@ -413,14 +426,17 @@ test("planning binds exact write bytes and preserves literal semantic order", as
       ]),
     ),
   );
-  const exactWriteCommand =
-    /`write <add\|modify> <path> sha256:<digest>`/u;
   for (const name of ["workflow", "planner", "approvals", "csharp", "checklist"]) {
     const text = sources[name];
     assert.match(text, /active authority/u, name);
     assert.match(text, /exact complete (?:target )?bytes/u, name);
     assert.match(text, /SHA-256/u, name);
-    assert.match(text, exactWriteCommand, name);
+    assert.match(text, /changes\[\]\.targetSha256/u, name);
+    assert.doesNotMatch(
+      text,
+      /`write <add\|modify> <path> sha256:<digest>`/u,
+      name,
+    );
     assert.match(text, /scop/iu, name);
     assert.match(text, /literal tokens/u, name);
     assert.match(text, /array (?:element )?order/u, name);
@@ -432,26 +448,26 @@ test("planning binds exact write bytes and preserves literal semantic order", as
   for (const name of ["planner", "approvals", "checklist"]) {
     assert.match(
       sources[name],
-      /(?:use )?`add` (?:maps )?only (?:for|to) `paths\.create`/u,
+      /(?:operation )?`create` (?:maps )?only (?:for|to) `paths\.create`/u,
       name,
     );
     assert.match(
       sources[name],
-      /(?:use )?`modify` (?:maps )?only (?:for|to) `paths\.modify`/u,
+      /(?:operation )?`modify` (?:maps )?only (?:for|to) `paths\.modify`/u,
       name,
     );
   }
   assert.match(
     sources.workflow,
-    /before approval draft exact complete bytes without writing/u,
+    /Before approval, draft every scoped file's exact complete target bytes without writing them to the project/u,
   );
   assert.match(
     sources.planner,
-    /draft the exact complete target bytes for every planned write without writing them/u,
+    /draft the exact complete target bytes for every planned write without writing them/iu,
   );
   assert.match(
     sources.approvals,
-    /A patch, summary, partial file, prospective digest, or post-approval draft is not a content binding/u,
+    /A command string, patch, summary, partial file, prospective digest, or post-approval draft is not a content binding/u,
   );
 });
 
@@ -523,6 +539,211 @@ test("non-C# task plan may omit csharpClosure", () => {
   assert.equal(taskPlanTouchesCSharp(plan), false);
   const result = validateTaskPlan(plan);
   assert.equal(result.valid, true, JSON.stringify(result.errors, null, 2));
+});
+
+test("task plans require one exact target SHA-256 for every planned write", () => {
+  const valid = taskPlanFixture({ changedPath: "Tests/test.qaas.yaml" });
+  assert.equal(validateTaskPlan(valid).valid, true);
+
+  const missing = structuredClone(valid);
+  delete missing.changes[0].targetSha256;
+  missing.digest = canonicalDigest(missing);
+  const missingResult = validateTaskPlan(missing);
+  assert.equal(missingResult.valid, false);
+  assert.ok(
+    missingResult.errors.some(
+      (entry) => entry.path === "$.changes[0].targetSha256",
+    ),
+    JSON.stringify(missingResult.errors, null, 2),
+  );
+
+  const malformed = structuredClone(valid);
+  malformed.changes[0].targetSha256 = "not-a-digest";
+  malformed.digest = canonicalDigest(malformed);
+  const malformedResult = validateTaskPlan(malformed);
+  assert.equal(malformedResult.valid, false);
+  assert.ok(
+    malformedResult.errors.some(
+      (entry) =>
+        entry.path === "$.changes[0].targetSha256" &&
+        entry.keyword === "pattern",
+    ),
+    JSON.stringify(malformedResult.errors, null, 2),
+  );
+
+  const emptyTarget = structuredClone(valid);
+  emptyTarget.changes[0].targetSha256 = sha256("");
+  emptyTarget.digest = canonicalDigest(emptyTarget);
+  const emptyResult = validateTaskPlan(emptyTarget);
+  assert.equal(emptyResult.valid, false);
+  assert.ok(
+    emptyResult.errors.some(
+      (entry) =>
+        entry.path === "$.changes[0].targetSha256" &&
+        entry.keyword === "safety",
+    ),
+    JSON.stringify(emptyResult.errors, null, 2),
+  );
+});
+
+test("PreTool project writes bind exact resulting bytes, path, and operation", async () => {
+  const item = await fixture("qaas-write-binding-");
+  const existingPath = path.join(item.project, "Tests", "logic.yaml");
+  await mkdir(path.dirname(existingPath), { recursive: true });
+  await writeFile(
+    existingPath,
+    "name: logic\nmode: safe\nname: shadow\n",
+    "utf8",
+  );
+  const context = hookEnvironment(
+    {
+      session_id: "binding-session",
+      tool_name: "Edit",
+      tool_input: {},
+    },
+    { env: item.env },
+  );
+  const event = (toolName, toolUseId, toolInput) => ({
+    hook_event_name: "PreToolUse",
+    session_id: "binding-session",
+    tool_name: toolName,
+    tool_use_id: toolUseId,
+    tool_input: toolInput,
+  });
+
+  const createContent = "case: exact\n";
+  const create = await classifyToolCall(
+    event("Write", "create-happy", {
+      file_path: "Tests/new-case.yaml",
+      content: createContent,
+    }),
+    context,
+  );
+  assert.equal(create.operation, "create");
+  assert.equal(create.targetSha256, sha256(createContent));
+  assert.doesNotThrow(() =>
+    assertExactProjectWriteBinding(create, {
+      writeBindings: [
+        {
+          path: "Tests/new-case.yaml",
+          operation: "create",
+          targetSha256: sha256(createContent),
+        },
+      ],
+    }),
+  );
+  const createScope = {
+    writeBindings: [
+      {
+        path: "Tests/new-case.yaml",
+        operation: "create",
+        targetSha256: sha256(createContent),
+      },
+    ],
+  };
+  await writeFile(path.join(item.project, "Tests", "new-case.yaml"), createContent);
+  await assert.doesNotReject(
+    assertAppliedProjectWriteBinding(create, createScope),
+  );
+
+  const edit = await classifyToolCall(
+    event("Edit", "edit-happy", {
+      file_path: "Tests/logic.yaml",
+      old_string: "mode: safe",
+      new_string: "mode: strict",
+    }),
+    context,
+  );
+  const exactTarget = "name: logic\nmode: strict\nname: shadow\n";
+  assert.equal(edit.operation, "modify");
+  assert.equal(edit.targetSha256, sha256(exactTarget));
+  const exactScope = {
+    writeBindings: [
+      {
+        path: "Tests/logic.yaml",
+        operation: "modify",
+        targetSha256: sha256(exactTarget),
+      },
+    ],
+  };
+  assert.doesNotThrow(() =>
+    assertExactProjectWriteBinding(edit, exactScope),
+  );
+  await writeFile(existingPath, exactTarget, "utf8");
+  await assert.doesNotReject(
+    assertAppliedProjectWriteBinding(edit, exactScope),
+  );
+  await writeFile(existingPath, `${exactTarget}changed: after-tool\n`, "utf8");
+  await assert.rejects(
+    assertAppliedProjectWriteBinding(edit, exactScope),
+    /Applied file bytes do not match/u,
+  );
+  await writeFile(existingPath, exactTarget, "utf8");
+  assert.throws(
+    () =>
+      assertExactProjectWriteBinding(edit, {
+        writeBindings: [{
+          ...exactScope.writeBindings[0],
+          targetSha256: sha256("stale or changed target bytes"),
+        }],
+      }),
+    /do not match approved targetSha256/u,
+  );
+  assert.throws(
+    () =>
+      assertExactProjectWriteBinding(edit, {
+        writeBindings: [{
+          ...exactScope.writeBindings[0],
+          path: "Tests/other.yaml",
+        }],
+      }),
+    /exactly one target-byte binding/u,
+  );
+  assert.throws(
+    () =>
+      assertExactProjectWriteBinding(edit, {
+        writeBindings: [{
+          ...exactScope.writeBindings[0],
+          operation: "create",
+        }],
+      }),
+    /operation does not match/u,
+  );
+
+  await assert.rejects(
+    classifyToolCall(
+      event("Edit", "edit-missing", {
+        file_path: "Tests/logic.yaml",
+        old_string: "missing: value",
+        new_string: "present: value",
+      }),
+      context,
+    ),
+    /old_string is missing/u,
+  );
+  await assert.rejects(
+    classifyToolCall(
+      event("Edit", "edit-ambiguous", {
+        file_path: "Tests/logic.yaml",
+        old_string: "name:",
+        new_string: "case:",
+        replace_all: true,
+      }),
+      context,
+    ),
+    /replace_all and multi-match edits are denied/u,
+  );
+  await assert.rejects(
+    classifyToolCall(
+      event("NotebookEdit", "notebook-denied", {
+        notebook_path: "Tests/logic.ipynb",
+        cell_id: "cell-1",
+        new_source: "print('unsafe to reconstruct')",
+      }),
+      context,
+    ),
+    /NotebookEdit is denied/u,
+  );
 });
 
 test("task-plan schema and runtime agree on C# paths and closure fields", async () => {
@@ -1300,6 +1521,43 @@ function base64Json(value) {
   return Buffer.from(JSON.stringify(value), "utf8").toString("base64");
 }
 
+async function importUserRunEvidence({
+  item,
+  handle,
+  action,
+  handoff,
+  stdout = "",
+  stderr = "",
+  exitCode = 0,
+}) {
+  assert.equal(handoff.status, "user-run-required");
+  assert.equal(handoff.automatedExecution, false);
+  const evidence = structuredClone(handoff.evidenceImport.template);
+  for (const [index, result] of evidence.results.entries()) {
+    result.startedAt = `2026-07-26T08:00:0${index}.000Z`;
+    result.finishedAt = `2026-07-26T08:00:0${index + 1}.000Z`;
+    result.stdout = stdout;
+    result.stderr = stderr;
+    result.exitCode = exitCode;
+  }
+  const target = path.join(
+    item.project,
+    ...handoff.evidenceImport.relativePath.split("/"),
+  );
+  await mkdir(path.dirname(target), { recursive: true });
+  await writeFile(target, `${JSON.stringify(evidence)}\n`, "utf8");
+  return runApproved(
+    [
+      "--session-handle",
+      handle,
+      "--action",
+      action,
+      "--import-evidence",
+    ],
+    item.env,
+  );
+}
+
 async function spawnCapture(program, args, options = {}) {
   const child = spawn(program, args, {
     windowsHide: true,
@@ -1527,6 +1785,74 @@ test("project mirrors reject protected-state symlink and junction escapes", asyn
   );
 });
 
+test("context write targets reject in-project file links and directory junctions", async () => {
+  const item = await fixture("qaas-context-link-");
+  const qaasDirectory = path.join(item.project, ".claude", "qaas");
+  const mappedDirectory = path.join(item.project, "mapped-context");
+  const victim = path.join(item.project, "victim.md");
+  await mkdir(qaasDirectory, { recursive: true });
+  await mkdir(mappedDirectory, { recursive: true });
+  await writeFile(victim, "unchanged victim\n", "utf8");
+
+  const fileLink = path.join(qaasDirectory, "project.md");
+  let fileLinkCreated = true;
+  try {
+    await symlink(victim, fileLink, "file");
+  } catch (error) {
+    if (process.platform !== "win32" || error?.code !== "EPERM") throw error;
+    fileLinkCreated = false;
+  }
+  if (fileLinkCreated) {
+    await assert.rejects(
+      prepareSafeProjectWritePath(item.project, fileLink),
+      /symbolic link or junction/u,
+    );
+  }
+
+  const directoryLink = path.join(qaasDirectory, "custom");
+  await symlink(
+    mappedDirectory,
+    directoryLink,
+    process.platform === "win32" ? "junction" : "dir",
+  );
+  await assert.rejects(
+    prepareSafeProjectWritePath(
+      item.project,
+      path.join(directoryLink, "topic.md"),
+    ),
+    /symbolic link or junction/u,
+  );
+  assert.equal(await readFile(victim, "utf8"), "unchanged victim\n");
+});
+
+test("fingerprints treat a changed in-project link target as project drift", () => {
+  const base = {
+    entries: [
+      {
+        path: "linked.txt",
+        size: 4,
+        sha256: sha256("same"),
+        linkTarget: "target-a.txt",
+      },
+    ],
+    packageSnapshot: null,
+    contextDigest: null,
+    externalReferences: [],
+    renderedTemplate: null,
+  };
+  const comparison = compareFingerprints(base, {
+    ...base,
+    entries: [
+      {
+        ...base.entries[0],
+        linkTarget: "target-b.txt",
+      },
+    ],
+  });
+  assert.equal(comparison.equal, false);
+  assert.deepEqual(comparison.changed, ["linked.txt"]);
+});
+
 test("reserved preauthorization cannot survive lease replacement", async () => {
   const item = await fixture("qaas-reserved-lease-");
   const authority = await openAuthority({
@@ -1601,7 +1927,7 @@ test("reserved preauthorization cannot survive lease replacement", async () => {
   );
 });
 
-test("MCP templates bind canonical logical slots even under non-query field names", async () => {
+test("MCP discovery binds exact logical slots and falls back to Helm without guessing", async (t) => {
   const inputSchema = {
     type: "object",
     additionalProperties: false,
@@ -1657,17 +1983,54 @@ test("MCP templates bind canonical logical slots even under non-query field name
       },
     ],
   };
+  const approvedTransport = describeMcpTransport({
+    QAAS_DOCS_MCP_URL: "http://127.0.0.1:1/mcp",
+  });
+  const probeEvidence = {
+    schemaVersion: "1.0",
+    projectId: "resolver-test-project",
+    server: "docs",
+    transportDigest: canonicalDigest(approvedTransport),
+    protocolVersion: "2025-03-26",
+    sessionMode: "stateless",
+    operations: [...DOCS_MCP_PROBE_OPERATIONS],
+    bounds: { ...DEFAULT_DOCS_MCP_PROBE_BOUNDS },
+    probeDefinition: DOCS_MCP_PROBE_DEFINITION,
+    passed: true,
+    toolsCallPerformed: false,
+    probedAt: new Date().toISOString(),
+    tools: [
+      { name: "find", inputSchema },
+      { name: "read", inputSchema: readSchema },
+    ].map((tool) => ({
+      ...tool,
+      schemaDigest: canonicalDigest(tool.inputSchema),
+      schemaBytes: Buffer.byteLength(canonicalJson(tool.inputSchema), "utf8"),
+    })),
+  };
+  probeEvidence.digest = canonicalDigest(probeEvidence);
+  for (const capability of registry.capabilities) {
+    capability.probeEvidenceDigest = probeEvidence.digest;
+  }
+  const resolveRegistry = (env, capabilityRegistry = registry) =>
+    resolveDocumentationSources({
+      env,
+      capabilityRegistry,
+      probeEvidence,
+      approvedTransport,
+    });
   assert.deepEqual(validateCapabilityRegistry(registry), {
     valid: true,
     errors: [],
   });
   let observed = null;
+  const resolvedSources = resolveRegistry({ QAAS_DOCS_PRIMARY_URL: "" });
+  assert.equal(resolvedSources.mcp.search.server, "docs");
+  assert.equal(resolvedSources.mcp.search.tool, "find");
+  assert.equal(resolvedSources.mcp.read.tool, "read");
   const result = await resolveDocumentationQuery({
     query: "rate policy",
-    sources: resolveDocumentationSources({
-      env: { QAAS_DOCS_PRIMARY_URL: "" },
-      capabilityRegistry: registry,
-    }),
+    sources: resolvedSources,
     callMcp: async (_capability, input) => {
       observed = input;
       return [{ id: "rate" }];
@@ -1675,6 +2038,94 @@ test("MCP templates bind canonical logical slots even under non-query field name
   });
   assert.deepEqual(observed, { searchText: "rate policy", maximum: 3 });
   assert.equal(result.kind, "mcp-search");
+  assert.equal(result.source, "wikiall-mcp");
+
+  let helmRequests = 0;
+  const server = http.createServer((_request, response) => {
+    helmRequests += 1;
+    response
+      .writeHead(200, { "Content-Type": "text/html" })
+      .end('<a href="rate-policy.html">Rate policy</a>');
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => server.close());
+  const fallback = await resolveDocumentationQuery({
+    query: "rate policy",
+    sources: resolveRegistry({
+      QAAS_DOCS_HELM_URL:
+        `http://127.0.0.1:${server.address().port}/docs/`,
+    }),
+    callMcp: async () => {
+      throw Object.assign(new Error("WikiAll is temporarily unavailable"), {
+        mcpAvailability: "unavailable",
+      });
+    },
+  });
+  assert.equal(fallback.source, "helm-http");
+  assert.deepEqual(fallback.priorFailures, [
+    { source: "wikiall-mcp", category: "unavailable" },
+  ]);
+  const requestsAfterAvailabilityFallback = helmRequests;
+  await assert.rejects(
+    resolveDocumentationQuery({
+      query: "rate policy",
+      sources: resolveRegistry({
+        QAAS_DOCS_HELM_URL:
+          `http://127.0.0.1:${server.address().port}/docs/`,
+      }),
+      callMcp: async () => {
+        throw new Error("Live MCP schema differs from the signed registry");
+      },
+    }),
+    /schema differs/u,
+  );
+  assert.equal(helmRequests, requestsAfterAvailabilityFallback);
+  for (const message of [
+    "Documentation MCP returned HTTP 401",
+    "Documentation MCP tool reported an error",
+    "Reviewed documentation MCP tool is unavailable: find",
+    "MCP JSON-RPC error -32000: network policy invalid",
+    "Reviewed documentation MCP tool is unavailable: network_docs",
+  ]) {
+    await assert.rejects(
+      resolveDocumentationQuery({
+        query: "rate policy",
+        sources: resolveRegistry({
+          QAAS_DOCS_HELM_URL:
+            `http://127.0.0.1:${server.address().port}/docs/`,
+        }),
+        callMcp: async () => {
+          throw new Error(message);
+        },
+      }),
+      new RegExp(message.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "u"),
+    );
+  }
+  assert.equal(helmRequests, requestsAfterAvailabilityFallback);
+  const ambiguousRegistry = {
+    ...registry,
+    capabilities: [
+      ...registry.capabilities,
+      {
+        ...registry.capabilities[0],
+        id: "alternate-docs-search",
+        server: "alternate-docs",
+        tool: "alternate-find",
+      },
+      {
+        ...registry.capabilities[1],
+        id: "alternate-docs-read",
+        server: "alternate-docs",
+        tool: "alternate-read",
+      },
+    ],
+  };
+  assert.throws(
+    () =>
+      resolveRegistry({}, ambiguousRegistry),
+    /not backed|capability pairs are ambiguous/u,
+  );
   const destructive = analyzeMcpTool(
     {
       server: "db",
@@ -1691,9 +2142,50 @@ test("public documentation has a safe default and bounded URL search/failover", 
     resolveDocumentationSources({ env: {} }).primaryUrl,
     DEFAULT_QAAS_DOCS_URL,
   );
+  let secondaryRequests = 0;
   const server = http.createServer((request, response) => {
-    if (request.url === "/bad/") {
+    if (
+      request.url === "/bad/" ||
+      request.url === "/bad/llms.txt" ||
+      request.url === "/bad/sitemap.xml"
+    ) {
       response.writeHead(503).end("no");
+      return;
+    }
+    if (request.url === "/oversize/llms.txt") {
+      response.writeHead(200, {
+        "Content-Type": "text/plain",
+        "Content-Length": String(256 * 1024 + 1),
+      }).end();
+      return;
+    }
+    if (request.url === "/docs/llms.txt") {
+      secondaryRequests += 1;
+      response
+        .writeHead(200, { "Content-Type": "text/plain" })
+        .end(
+          `${"bounded-index-padding\n".repeat(1_100)}` +
+            "- [Rate policies](rate-policy.html): Publishing policy reference.\n",
+        );
+      return;
+    }
+    if (request.url === "/wide/llms.txt") {
+      const ordinaryCandidates = Array.from(
+        { length: 10 },
+        (_, index) =>
+          `- [Rate policy ${index}](${"a".repeat(3_000)}-${index}.html)`,
+      ).join("\n");
+      response
+        .writeHead(200, { "Content-Type": "text/plain" })
+        .end(
+          `${ordinaryCandidates}\n- [Rate policy oversized](${"b".repeat(
+            50_000,
+          )}.html)`,
+        );
+      return;
+    }
+    if (request.url === "/docs/sitemap.xml") {
+      response.writeHead(404).end("not present");
       return;
     }
     if (request.url === "/docs/") {
@@ -1718,8 +2210,75 @@ test("public documentation has a safe default and bounded URL search/failover", 
     },
   });
   assert.equal(result.kind, "configured-url-search");
+  assert.equal(result.indexKind, "llms");
   assert.equal(result.candidateCount, 1);
+  assert.equal(
+    result.candidates[0].url,
+    `http://127.0.0.1:${port}/docs/rate-policy.html`,
+  );
+  assert.equal(result.candidates[0].source, "secondary");
   assert.equal(result.priorFailures[0].source, "primary");
+  assert.equal(secondaryRequests, 1);
+  const focusedResult = await resolveDocumentationQuery({
+    query: "rate policy",
+    relativeUrl: result.candidates[0].url,
+    selectedSource: result.candidates[0].source,
+    sources: {
+      mcp: null,
+      primaryUrl: `http://127.0.0.1:${port}/bad/`,
+      secondaryUrl: `http://127.0.0.1:${port}/docs/`,
+      zimPath: null,
+    },
+  });
+  assert.equal(focusedResult.kind, "http-read");
+  assert.equal(focusedResult.sourceKind, "secondary");
+  assert.equal(focusedResult.excerpt, "bounded page");
+  await assert.rejects(
+    resolveDocumentationQuery({
+      query: "rate policy",
+      relativeUrl: result.candidates[0].url,
+      selectedSource: result.candidates[0].source,
+      sources: {
+        mcp: null,
+        primaryUrl: `http://127.0.0.1:${port}/bad/`,
+        secondaryUrl: `http://127.0.0.1:${port}/changed/`,
+        zimPath: null,
+      },
+    }),
+    /escaped its configured (?:origin|base path)/u,
+  );
+  const boundedCandidates = await resolveDocumentationQuery({
+    query: "rate policy",
+    sources: {
+      mcp: null,
+      primaryUrl: `http://127.0.0.1:${port}/bad/`,
+      secondaryUrl: `http://127.0.0.1:${port}/wide/`,
+      zimPath: null,
+    },
+  });
+  assert.equal(boundedCandidates.truncated, true);
+  assert.ok(boundedCandidates.candidateCount > 0);
+  assert.ok(boundedCandidates.candidateCount < 10);
+  assert.ok(
+    boundedCandidates.candidates.every(
+      (candidate) => Buffer.byteLength(candidate.url, "utf8") <= 4 * 1024,
+    ),
+  );
+  assert.ok(
+    Buffer.byteLength(JSON.stringify(boundedCandidates), "utf8") <= 16 * 1024,
+  );
+  await assert.rejects(
+    resolveDocumentationQuery({
+      query: "rate policy",
+      sources: {
+        mcp: null,
+        primaryUrl: `http://127.0.0.1:${port}/oversize/`,
+        secondaryUrl: `http://127.0.0.1:${port}/docs/`,
+        zimPath: null,
+      },
+    }),
+    /output bound/u,
+  );
   await assert.rejects(
     resolveDocumentationQuery({
       query: "bounds",
@@ -1755,8 +2314,8 @@ test("documentation provenance binds every resolver selector and local ZIM bytes
   await writeFile(firstZim, "bounded documentation bytes", "utf8");
   await writeFile(secondZim, "bounded documentation bytes", "utf8");
   const env = {
-    QAAS_DOCS_PRIMARY_URL: "https://primary.example.test/docs/",
-    QAAS_DOCS_SECONDARY_URL: "https://secondary.example.test/docs/",
+    QAAS_DOCS_HELM_URL: "https://helm.example.test/docs/",
+    QAAS_DOCS_WIKIALL_URL: "https://wikiall.example.test/docs/",
     QAAS_DOCS_ZIM_PATH: firstZim,
     QAAS_DOCS_MCP_URL: "https://mcp.example.test/read/",
     QAAS_DOCS_MCP_CREDENTIAL_ENV: "DOCS_READ_IDENTITY",
@@ -1768,12 +2327,27 @@ test("documentation provenance binds every resolver selector and local ZIM bytes
   assert.equal(expected.zim.realPath, await realpath(firstZim));
   assert.equal(expected.zim.size, Buffer.byteLength("bounded documentation bytes"));
   assert.ok(expected.zim.sha256);
+  assert.equal(
+    expected.selectedSourceDigests["helm-http"],
+    sha256(env.QAAS_DOCS_HELM_URL),
+  );
+  assert.equal(
+    expected.selectedSourceDigests["wikiall-http"],
+    sha256(env.QAAS_DOCS_WIKIALL_URL),
+  );
+  assert.equal(
+    expected.selectedSourceDigests["wikiall-mcp"],
+    sha256(env.QAAS_DOCS_MCP_URL),
+  );
   assert.deepEqual(expected.configurationNames, [
-    "QAAS_DOCS_PRIMARY_URL",
-    "QAAS_DOCS_SECONDARY_URL",
-    "QAAS_DOCS_ZIM_PATH",
+    "QAAS_DOCS_HELM_URL",
+    "QAAS_DOCS_WIKIALL_URL",
     "QAAS_DOCS_MCP_URL",
     "QAAS_DOCS_MCP_CREDENTIAL_ENV",
+    "QAAS_DOCS_AIRGAP",
+    "QAAS_DOCS_ZIM_PATH",
+    "QAAS_DOCS_PRIMARY_URL",
+    "QAAS_DOCS_SECONDARY_URL",
   ]);
   assert.equal(expected.configurationNames.includes("QAAS_DOCS_URL"), false);
   await assertCurrentDocumentationSourceConfiguration(expected, env);
@@ -1815,12 +2389,12 @@ test("documentation provenance binds every resolver selector and local ZIM bytes
   const selectorMutants = [
     {
       ...env,
-      QAAS_DOCS_PRIMARY_URL: "https://changed-primary.example.test/docs/",
+      QAAS_DOCS_HELM_URL: "https://changed-helm.example.test/docs/",
     },
     {
       ...env,
-      QAAS_DOCS_SECONDARY_URL:
-        "https://changed-secondary.example.test/docs/",
+      QAAS_DOCS_WIKIALL_URL:
+        "https://changed-wikiall.example.test/docs/",
     },
     {
       ...env,
@@ -1848,7 +2422,12 @@ test("documentation provenance binds every resolver selector and local ZIM bytes
   );
   const absent = await attestDocumentationSourceConfiguration({});
   assert.equal(absent.zim.state, "absent");
-  assert.equal(absent.primary.effective.urlDigest, sha256(DEFAULT_QAAS_DOCS_URL));
+  assert.equal(absent.helm.effective, null);
+  assert.equal(absent.wikiAll.effective, null);
+  assert.equal(
+    absent.public.effective.urlDigest,
+    sha256(DEFAULT_QAAS_DOCS_URL),
+  );
 });
 
 test("configured source provenance never persists query values", async (t) => {
@@ -2364,6 +2943,428 @@ test("user-supplied source GET is task-bound, reviewed, and one-use", async (t) 
   assert.equal(requestCount, 2);
 });
 
+test("documentation MCP bootstrap is approved, discovery-only, one-use, and schema-bound", async (t) => {
+  const searchSchema = {
+    type: "object",
+    additionalProperties: false,
+    required: ["query", "limit"],
+    properties: {
+      query: { type: "string", maxLength: 200 },
+      limit: { type: "integer", minimum: 1, maximum: 10 },
+    },
+  };
+  const readSchema = {
+    type: "object",
+    additionalProperties: false,
+    required: ["path"],
+    properties: { path: { type: "string", maxLength: 500 } },
+  };
+  const trace = [];
+  const server = http.createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const message = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    trace.push({
+      method: message.method,
+      session: request.headers["mcp-session-id"] ?? null,
+    });
+    if (message.method === "initialize") {
+      response
+        .writeHead(200, {
+          "Content-Type": "application/json",
+          "Mcp-Session-Id": "probe-session",
+        })
+        .end(JSON.stringify({
+          jsonrpc: "2.0",
+          id: message.id,
+          result: {
+            protocolVersion: "2025-03-26",
+            capabilities: {},
+          },
+        }));
+      return;
+    }
+    if (message.method === "notifications/initialized") {
+      response.writeHead(202).end();
+      return;
+    }
+    if (message.method === "tools/list") {
+      response
+        .writeHead(200, { "Content-Type": "application/json" })
+        .end(JSON.stringify({
+          jsonrpc: "2.0",
+          id: message.id,
+          result: {
+            tools: [
+              { name: "docs_search", inputSchema: searchSchema },
+              { name: "docs_read", inputSchema: readSchema },
+            ],
+          },
+        }));
+      return;
+    }
+    response
+      .writeHead(500, { "Content-Type": "application/json" })
+      .end(JSON.stringify({
+        jsonrpc: "2.0",
+        id: message.id,
+        error: { code: -32601, message: "tools/call is forbidden in probe" },
+      }));
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => server.close());
+
+  const item = await fixture("qaas-docs-mcp-probe-");
+  item.env.QAAS_DOCS_MCP_URL =
+    `http://127.0.0.1:${server.address().port}/mcp`;
+  const sessionId = "docs-mcp-probe-session";
+  const activated = await handleSessionEvent(
+    sessionEvent(sessionId, "/qaas:onboard"),
+    { env: item.env },
+  );
+  const handle = sessionHandleFrom(activated);
+  await runWorkflowAuthority(
+    ["discover", "--session-handle", handle],
+    item.env,
+  );
+  const probeArgs = [
+    "--session-handle",
+    handle,
+    "--server",
+    "wikiall_docs",
+  ];
+  const helperEvent = {
+    hook_event_name: "PreToolUse",
+    session_id: sessionId,
+    tool_name: "Bash",
+    tool_use_id: "docs-mcp-probe-helper",
+    tool_input: {
+      command:
+        `node "\${CLAUDE_PLUGIN_ROOT}/scripts/docs-mcp-discover.mjs" ` +
+        `--session-handle ${handle} --server wikiall_docs`,
+    },
+  };
+  assert.equal(
+    (
+      await classifyToolCall(
+        helperEvent,
+        hookEnvironment(helperEvent, { env: item.env }),
+      )
+    ).actionClass,
+    "configured-source-read",
+  );
+  const review = await runWorkflowAuthority(
+    [
+      "prepare",
+      "--session-handle",
+      handle,
+      "--kind",
+      "docs-mcp-probe",
+      "--server",
+      "wikiall_docs",
+    ],
+    item.env,
+  );
+  const reviewDocument = JSON.parse(review.review.canonicalDocument);
+  assert.equal(reviewDocument.toolsCallPermitted, false);
+  assert.deepEqual(reviewDocument.operations, DOCS_MCP_PROBE_OPERATIONS);
+  assert.equal(
+    reviewDocument.bounds.requestLimit,
+    DOCS_MCP_PROBE_OPERATIONS.length,
+  );
+  await approveQuestion({
+    env: item.env,
+    sessionId,
+    question: review.question,
+    toolUseId: "approve-docs-mcp-probe",
+  });
+  const discovered = await runDocsMcpDiscover(probeArgs, item.env);
+  assert.equal(discovered.toolsCallPerformed, false);
+  assert.deepEqual(
+    discovered.tools.map((tool) => tool.name),
+    ["docs_search", "docs_read"],
+  );
+  assert.ok(trace.every((entry) => entry.method !== "tools/call"));
+  const requestCountAfterProbe = trace.length;
+  await assert.rejects(
+    runDocsMcpDiscover(probeArgs, item.env),
+    /approval is stale|lacks exact one-use/u,
+  );
+  assert.equal(trace.length, requestCountAfterProbe);
+  const shown = await runDocsMcpDiscover(
+    [
+      "--session-handle",
+      handle,
+      "--show-tool",
+      "docs_search",
+    ],
+    item.env,
+  );
+  assert.equal(shown.probeEvidenceDigest, discovered.probeEvidenceDigest);
+  assert.deepEqual(shown.tool.inputSchema, searchSchema);
+  assert.equal(trace.length, requestCountAfterProbe);
+  const probeContext = await runtimeContext(item.env);
+  const persistedProbe = (
+    await probeContext.authority.readSigned(
+      "integrations/docs-mcp-probe.json",
+    )
+  ).payload;
+  const expandedBounds = structuredClone(persistedProbe);
+  expandedBounds.bounds.unreviewedRetryLimit = 1;
+  expandedBounds.digest = canonicalDigest(expandedBounds);
+  assert.equal(validateDocsMcpProbeEvidence(expandedBounds).valid, false);
+
+  const registry = {
+    version: "probe-backed",
+    approvedAt: new Date().toISOString(),
+    capabilities: [
+      {
+        id: "docs-search",
+        logicalOperation: "docs.search",
+        server: "wikiall_docs",
+        tool: "docs_search",
+        classification: "read",
+        inputSchema: searchSchema,
+        schemaDigest: canonicalDigest(searchSchema),
+        safeArgumentTemplate: {
+          query: { $slot: "query", type: "string" },
+          limit: { $slot: "limit", type: "integer" },
+        },
+        outputLimitBytes: 4096,
+        outputLimitItems: 10,
+        probePassed: true,
+        probeEvidenceDigest: discovered.probeEvidenceDigest,
+        userApproved: true,
+      },
+      {
+        id: "docs-read",
+        logicalOperation: "docs.read",
+        server: "wikiall_docs",
+        tool: "docs_read",
+        classification: "read",
+        inputSchema: readSchema,
+        schemaDigest: canonicalDigest(readSchema),
+        safeArgumentTemplate: {
+          path: { $slot: "identifier", type: "string" },
+        },
+        outputLimitBytes: 16 * 1024,
+        outputLimitItems: 1,
+        probePassed: true,
+        probeEvidenceDigest: discovered.probeEvidenceDigest,
+        userApproved: true,
+      },
+    ],
+  };
+  await runWorkflowAuthority(
+    [
+      "stage-capabilities",
+      "--session-handle",
+      handle,
+      "--content-base64",
+      base64Json(registry),
+    ],
+    item.env,
+  );
+  const capabilityReview = await runWorkflowAuthority(
+    [
+      "prepare",
+      "--session-handle",
+      handle,
+      "--kind",
+      "capabilities",
+    ],
+    item.env,
+  );
+  assert.equal(
+    JSON.parse(capabilityReview.review.canonicalDocument).docsMcpProbeDigest,
+    discovered.probeEvidenceDigest,
+  );
+  await approveQuestion({
+    env: item.env,
+    sessionId,
+    question: capabilityReview.question,
+    toolUseId: "approve-probe-backed-capabilities",
+  });
+  assert.equal(
+    (
+      await runWorkflowAuthority(
+        ["commit-capabilities", "--session-handle", handle],
+        item.env,
+      )
+    ).committed,
+    true,
+  );
+  const committed = await probeContext.authority.readSigned(
+    "integrations/capabilities.json",
+  );
+  assert.equal(
+    committed.payload.capabilities[0].probeEvidenceDigest,
+    discovered.probeEvidenceDigest,
+  );
+  const schemaMutant = structuredClone(registry);
+  schemaMutant.capabilities[0].inputSchema.properties.query.maxLength = 201;
+  schemaMutant.capabilities[0].schemaDigest = canonicalDigest(
+    schemaMutant.capabilities[0].inputSchema,
+  );
+  await runWorkflowAuthority(
+    [
+      "stage-capabilities",
+      "--session-handle",
+      handle,
+      "--content-base64",
+      base64Json(schemaMutant),
+    ],
+    item.env,
+  );
+  await assert.rejects(
+    runWorkflowAuthority(
+      [
+        "prepare",
+        "--session-handle",
+        handle,
+        "--kind",
+        "capabilities",
+      ],
+      item.env,
+    ),
+    /not backed by the current bounded schema probe/u,
+  );
+});
+
+test("documentation MCP discovery does not retry a failed reviewed transaction", async (t) => {
+  const methods = [];
+  const server = http.createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const message = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    methods.push(message.method);
+    if (message.method === "initialize") {
+      response
+        .writeHead(200, {
+          "Content-Type": "application/json",
+          "Mcp-Session-Id": "single-probe-session",
+        })
+        .end(JSON.stringify({
+          jsonrpc: "2.0",
+          id: message.id,
+          result: {
+            protocolVersion: "2025-03-26",
+            capabilities: {},
+          },
+        }));
+      return;
+    }
+    if (message.method === "notifications/initialized") {
+      response.writeHead(202).end();
+      return;
+    }
+    response.writeHead(404).end();
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => server.close());
+  const env = {
+    QAAS_DOCS_MCP_URL:
+      `http://127.0.0.1:${server.address().port}/mcp`,
+  };
+  await assert.rejects(
+    discoverStreamableMcpTools({
+      env,
+      approvedTransport: describeMcpTransport(env),
+    }),
+    /HTTP 404/u,
+  );
+  assert.deepEqual(methods, [
+    "initialize",
+    "notifications/initialized",
+    "tools/list",
+  ]);
+});
+
+test("documentation MCP discovery applies aggregate reviewed byte and time bounds", async (t) => {
+  const timeoutMethods = [];
+  const server = http.createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const message = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    if (request.url === "/bytes") {
+      response
+        .writeHead(200, { "Content-Type": "application/json" })
+        .end(JSON.stringify({
+          jsonrpc: "2.0",
+          id: message.id,
+          result: {
+            protocolVersion: "2025-03-26",
+            capabilities: {},
+            serverInfo: {
+              name: "oversized-init",
+              version: "1",
+              description: "x".repeat(2048),
+            },
+          },
+        }));
+      return;
+    }
+    timeoutMethods.push(message.method);
+    if (message.method === "initialize") {
+      setTimeout(() => {
+        response
+          .writeHead(200, {
+            "Content-Type": "application/json",
+            "Mcp-Session-Id": "bounded-probe-session",
+          })
+          .end(JSON.stringify({
+            jsonrpc: "2.0",
+            id: message.id,
+            result: {
+              protocolVersion: "2025-03-26",
+              capabilities: {},
+            },
+          }));
+      }, 600);
+      return;
+    }
+    if (message.method === "notifications/initialized") {
+      setTimeout(() => response.writeHead(202).end(), 600);
+      return;
+    }
+    response
+      .writeHead(200, { "Content-Type": "application/json" })
+      .end(JSON.stringify({
+        jsonrpc: "2.0",
+        id: message.id,
+        result: { tools: [] },
+      }));
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => server.close());
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const bytesEnv = { QAAS_DOCS_MCP_URL: `${origin}/bytes` };
+  await assert.rejects(
+    discoverStreamableMcpTools({
+      env: bytesEnv,
+      approvedTransport: describeMcpTransport(bytesEnv),
+      toolListOutputLimitBytes: 1024,
+    }),
+    /deterministic byte bound/u,
+  );
+  const timeoutEnv = { QAAS_DOCS_MCP_URL: `${origin}/timeout` };
+  await assert.rejects(
+    discoverStreamableMcpTools({
+      env: timeoutEnv,
+      timeoutMs: 1000,
+      approvedTransport: describeMcpTransport(timeoutEnv),
+    }),
+    /abort|timeout/iu,
+  );
+  assert.deepEqual(timeoutMethods, [
+    "initialize",
+    "notifications/initialized",
+  ]);
+});
+
 test("bounded Streamable HTTP MCP uses the exact live signed tool schema", async (t) => {
   assert.throws(
     () =>
@@ -2395,14 +3396,23 @@ test("bounded Streamable HTTP MCP uses the exact live signed tool schema", async
     probePassed: true,
     userApproved: true,
   };
+  let sessionIndex = 0;
+  let activeSession = null;
+  let expireRecoveryRequest = true;
+  const sessionTrace = [];
   const server = http.createServer(async (request, response) => {
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);
     const message = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-    response.setHeader("mcp-session-id", "bounded-session");
+    const requestSession = request.headers["mcp-session-id"];
+    sessionTrace.push({ method: message.method, session: requestSession });
     if (message.method === "notifications/initialized") {
+      assert.equal(requestSession, activeSession);
       response.writeHead(202).end();
     } else if (message.method === "initialize") {
+      assert.equal(requestSession, undefined);
+      activeSession = `bounded-session-${++sessionIndex}`;
+      response.setHeader("mcp-session-id", activeSession);
       response.writeHead(200, { "Content-Type": "application/json" }).end(
         JSON.stringify({
           jsonrpc: "2.0",
@@ -2411,6 +3421,7 @@ test("bounded Streamable HTTP MCP uses the exact live signed tool schema", async
         }),
       );
     } else if (message.method === "tools/list") {
+      assert.equal(requestSession, activeSession);
       response.writeHead(200, { "Content-Type": "application/json" }).end(
         JSON.stringify({
           jsonrpc: "2.0",
@@ -2425,6 +3436,30 @@ test("bounded Streamable HTTP MCP uses the exact live signed tool schema", async
         request.headers.authorization,
         ["Bearer", "local-secret-value"].join(" "),
       );
+      const searchText = message.params?.arguments?.searchText;
+      assert.equal(requestSession, activeSession);
+      if (searchText === "recover" && expireRecoveryRequest) {
+        expireRecoveryRequest = false;
+        response.writeHead(404).end("expired");
+        return;
+      }
+      if (searchText === "no-body") {
+        response.writeHead(204).end();
+        return;
+      }
+      const toolPayload =
+        searchText === "too-many"
+          ? { matches: Array.from({ length: 6 }, (_, index) => ({ index })) }
+          : {
+              results: [
+                {
+                  path:
+                    searchText === "recover"
+                      ? "qaas/recovered.html"
+                      : "qaas/index.html",
+                },
+              ],
+            };
       response.writeHead(200, { "Content-Type": "application/json" }).end(
         JSON.stringify({
           jsonrpc: "2.0",
@@ -2433,7 +3468,7 @@ test("bounded Streamable HTTP MCP uses the exact live signed tool schema", async
             content: [
               {
                 type: "text",
-                text: JSON.stringify({ results: [{ path: "qaas/index.html" }] }),
+                text: JSON.stringify(toolPayload),
               },
             ],
           },
@@ -2449,6 +3484,17 @@ test("bounded Streamable HTTP MCP uses the exact live signed tool schema", async
       QAAS_DOCS_MCP_CREDENTIAL_ENV: "OPENZIM_TEST_TOKEN",
       OPENZIM_TEST_TOKEN: "local-secret-value",
   };
+  assert.throws(
+    () =>
+      createStreamableMcpCaller({
+        env: {
+          ...mcpEnv,
+          OPENZIM_TEST_TOKEN: "invalid\nheader",
+        },
+        approvedTransport: describeMcpTransport(mcpEnv),
+      }),
+    /visible ASCII/u,
+  );
   const caller = createStreamableMcpCaller({
     env: mcpEnv,
     approvedTransport: describeMcpTransport(mcpEnv),
@@ -2457,6 +3503,135 @@ test("bounded Streamable HTTP MCP uses the exact live signed tool schema", async
   assert.deepEqual(result, {
     results: [{ path: "qaas/index.html" }],
   });
+  await assert.rejects(
+    caller(capability, { searchText: "too-many" }),
+    /signed output item bound/u,
+  );
+  await assert.rejects(
+    caller(capability, { searchText: "no-body" }),
+    (error) => {
+      assert.equal(error.mcpAvailability, undefined);
+      return true;
+    },
+  );
+  assert.deepEqual(await caller(capability, { searchText: "recover" }), {
+    results: [{ path: "qaas/recovered.html" }],
+  });
+  assert.equal(sessionIndex, 2);
+  assert.deepEqual(
+    sessionTrace
+      .filter((entry) => entry.method === "initialize")
+      .map((entry) => entry.session),
+    [undefined, undefined],
+  );
+});
+
+test("Streamable HTTP MCP accepts stateless multi-event SSE responses", async (t) => {
+  const inputSchema = {
+    type: "object",
+    additionalProperties: false,
+    required: ["query"],
+    properties: { query: { type: "string" } },
+  };
+  const capability = {
+    id: "stateless-search",
+    logicalOperation: "docs.search",
+    server: "wikiall",
+    tool: "docs_search",
+    classification: "read",
+    inputSchema,
+    schemaDigest: canonicalDigest(inputSchema),
+    safeArgumentTemplate: {
+      query: { $slot: "query", type: "string" },
+    },
+    outputLimitBytes: 4096,
+    outputLimitItems: 5,
+    probePassed: true,
+    userApproved: true,
+  };
+  const seen = [];
+  const server = http.createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const message = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    seen.push({
+      method: message.method,
+      session: request.headers["mcp-session-id"],
+      protocol: request.headers["mcp-protocol-version"],
+    });
+    if (message.method === "notifications/initialized") {
+      response.writeHead(202).end();
+      return;
+    }
+    if (message.method === "initialize") {
+      response.writeHead(200, { "Content-Type": "application/json" }).end(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: message.id,
+          result: { protocolVersion: "2025-03-26", capabilities: {} },
+        }),
+      );
+      return;
+    }
+    const result =
+      message.method === "tools/list"
+        ? { tools: [{ name: "docs_search", inputSchema }] }
+        : {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  results: [{ path: "qaas/stateless.html" }],
+                }),
+              },
+            ],
+          };
+    const notification = JSON.stringify({
+      jsonrpc: "2.0",
+      method: "notifications/message",
+      params: { level: "info", data: "bounded" },
+    });
+    const reply = JSON.stringify({
+      jsonrpc: "2.0",
+      id: message.id,
+      result,
+    });
+    response
+      .writeHead(200, { "Content-Type": "text/event-stream" })
+      .end(
+        `event: message\ndata: ${notification}\n\n` +
+          `event: message\ndata: ${reply}\n\n`,
+      );
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => server.close());
+  const env = {
+    QAAS_DOCS_MCP_URL: `http://127.0.0.1:${server.address().port}/mcp`,
+  };
+  const caller = createStreamableMcpCaller({
+    env,
+    approvedTransport: describeMcpTransport(env),
+  });
+  assert.deepEqual(await caller(capability, { query: "configuration" }), {
+    results: [{ path: "qaas/stateless.html" }],
+  });
+  assert.deepEqual(
+    seen.map((entry) => entry.method),
+    [
+      "initialize",
+      "notifications/initialized",
+      "tools/list",
+      "tools/call",
+    ],
+  );
+  assert.ok(seen.every((entry) => entry.session === undefined));
+  assert.equal(seen[0].protocol, undefined);
+  assert.ok(
+    seen
+      .slice(1)
+      .every((entry) => entry.protocol === "2025-03-26"),
+  );
 });
 
 test("unactivated user-scope hooks are strict no-ops with zero project writes", async () => {
@@ -3201,6 +4376,21 @@ test("Stop rejects malformed, empty, statement, and multiple-question messages",
     "Which input should be used? Which output should be expected?",
     "Which input should be used?\nThen I will stop.",
     "```\nWhich input?\n```",
+    [
+      "Confirm the repository boundary",
+      "Confirm the tested component",
+      "Confirm the input broker",
+      "Confirm the output broker",
+      "Confirm the sample format",
+      "Confirm the correlation field",
+      "Confirm the expected count",
+      "Confirm the delay unit",
+      "Confirm the build command",
+      "Which test case should be added?",
+    ].join("\n"),
+    "Confirm the input; confirm the output; confirm the oracle; which case should be added?",
+    "1. Confirm the input\n2. Confirm the output\n3. Which oracle should be used?",
+    "Which sample should be used and how should its identifier change?",
   ]) {
     const denied = await handleSessionEvent(
       stopEvent(sessionId, false, lastAssistantMessage),
@@ -3892,7 +5082,7 @@ test("bounded signed checkpoints survive compaction as a resumable projection", 
   );
   assert.equal(recorded.projection.phase, "DISCOVERING");
   assert.deepEqual(recorded.projection.authorityCapabilities, {
-    writeContentBinding: false,
+    writeContentBinding: true,
   });
   assert.deepEqual(recorded.projection.completedWork, checkpoint.completedWork);
   assert.deepEqual(recorded.projection.remainingWork, checkpoint.remainingWork);
@@ -3917,7 +5107,7 @@ test("bounded signed checkpoints survive compaction as a resumable projection", 
   );
   assert.equal(
     resumed.projection.authorityCapabilities.writeContentBinding,
-    false,
+    true,
   );
   assert.equal(resumed.signedProjection.payload.sequence, 1);
 
@@ -3954,7 +5144,7 @@ test(
       "cache",
       "qaas-plugin",
       "qaas",
-      "0.3.0",
+      "0.4.0",
     );
     await mkdir(path.dirname(installedPluginRoot), { recursive: true });
     await cp(pluginRoot, installedPluginRoot, { recursive: true });
@@ -3989,7 +5179,7 @@ test(
     assert.equal(validation.sourceRepositoryChecksApplied, false);
     assert.equal(validation.repositoryRoot, null);
     assert.equal(validation.pluginRoot, installedPluginRoot);
-    assert.equal(validation.version, "0.3.0");
+    assert.equal(validation.version, "0.4.0");
 
     const projectRoot = path.join(root, "project");
     await mkdir(projectRoot);
@@ -4248,7 +5438,7 @@ test("doctor denies project-local Node PATH shadows", async () => {
   );
 });
 
-test("approved workflow reaches build, template, and verified execution", { timeout: 120_000 }, async (t) => {
+test("approved workflow imports user-run build/template evidence and diagnoses run evidence", { timeout: 120_000 }, async (t) => {
   const item = await fixture("qaas-e2e-");
   const dotnet = await discoverProgram("dotnet", {
     cwd: item.project,
@@ -4536,9 +5726,31 @@ else
     ["prepare", "--session-handle", handle, "--kind", "context"],
     item.env,
   );
+  const exactContextReview = JSON.parse(
+    contextReview.review.canonicalDocument,
+  );
   assert.equal(
-    canonicalDigest(JSON.parse(contextReview.review.canonicalDocument)),
+    canonicalDigest(exactContextReview),
     contextReview.review.approvalDigest,
+  );
+  assert.equal(
+    exactContextReview.files.length,
+    coreTopics.length + 3,
+    "review must expose every topic, the index, and the managed CLAUDE block",
+  );
+  assert.ok(
+    exactContextReview.files.every(
+      (entry) =>
+        typeof entry.content === "string" &&
+        entry.contentEncoding === "utf8" &&
+        sha256(entry.content) === entry.approvedContentSha256,
+    ),
+    "context approval must expose and bind exact literal file contents",
+  );
+  assert.match(
+    contextReview.question.question,
+    /"content":"# unknowns\.md/u,
+    "AskUserQuestion must show literal context rather than digest-only metadata",
   );
   const challenge = (
     await context.authority.readSigned(
@@ -4568,6 +5780,52 @@ else
     question: contextReview.question,
     toolUseId: "approve-context",
   });
+  const reviewedUnknowns = exactContextReview.files.find(
+    (entry) => entry.path === ".claude/qaas/unknowns.md",
+  );
+  assert.ok(reviewedUnknowns);
+  await runWorkflowAuthority(
+    [
+      "stage-context",
+      "--session-handle",
+      handle,
+      "--path",
+      reviewedUnknowns.path,
+      "--content-base64",
+      Buffer.from(
+        `${reviewedUnknowns.content}\nUnreviewed but internally valid drift.\n`,
+        "utf8",
+      ).toString("base64"),
+    ],
+    item.env,
+  );
+  await runWorkflowAuthority(
+    ["finalize-context", "--session-handle", handle],
+    item.env,
+  );
+  await assert.rejects(
+    runWorkflowAuthority(
+      ["commit-context", "--session-handle", handle],
+      item.env,
+    ),
+    /no longer matches the exact file contents approved/u,
+  );
+  await runWorkflowAuthority(
+    [
+      "stage-context",
+      "--session-handle",
+      handle,
+      "--path",
+      reviewedUnknowns.path,
+      "--content-base64",
+      Buffer.from(reviewedUnknowns.content, "utf8").toString("base64"),
+    ],
+    item.env,
+  );
+  await runWorkflowAuthority(
+    ["finalize-context", "--session-handle", handle],
+    item.env,
+  );
   const committed = await runWorkflowAuthority(
     ["commit-context", "--session-handle", handle],
     item.env,
@@ -4591,6 +5849,20 @@ else
     ).phase,
     "PROJECT_READY",
   );
+  assert.equal(
+    JSON.parse(
+      await readFile(
+        path.join(item.project, ".claude", "qaas", "fingerprint.json"),
+        "utf8",
+      ),
+    ).digest,
+    (
+      await context.authority.readSigned(
+        "fingerprints/onboardingFingerprint.json",
+      )
+    ).payload.digest,
+    "project fingerprint mirror must contain the live approved fingerprint",
+  );
   const begun = await runWorkflowAuthority(
     ["begin-task", "--session-handle", handle, "--task-id", "self-test-task"],
     item.env,
@@ -4609,6 +5881,12 @@ else
     timeoutMs: 60_000,
     outputLimitBytes: 16_384,
   });
+  const approvedProgramBytes = await readFile(
+    path.join(item.project, "Program.cs"),
+  );
+  const approvedProjectBytes = await readFile(
+    path.join(item.project, "SelfTest.csproj"),
+  );
   const plan = {
     schemaVersion: "1.0",
     planId: "self-test-plan",
@@ -4630,11 +5908,13 @@ else
         path: "Program.cs",
         operation: "modify",
         intent: "Keep the deterministic self-test program",
+        targetSha256: sha256(approvedProgramBytes),
       },
       {
         path: "SelfTest.csproj",
         operation: "modify",
         intent: "Keep the deterministic SDK project definition",
+        targetSha256: sha256(approvedProjectBytes),
       },
     ],
     dependencies: [],
@@ -4720,6 +6000,18 @@ else
   const planReviewDocument = JSON.parse(planReview.review.canonicalDocument);
   assert.equal(planReviewDocument.artifactDigest, stagedPlan.digest);
   assert.equal(planReviewDocument.processBindings.length, 3);
+  assert.deepEqual(planReviewDocument.writeBindings, [
+    {
+      path: "Program.cs",
+      operation: "modify",
+      targetSha256: sha256(approvedProgramBytes),
+    },
+    {
+      path: "SelfTest.csproj",
+      operation: "modify",
+      targetSha256: sha256(approvedProjectBytes),
+    },
+  ]);
   assert.equal(
     canonicalDigest(planReviewDocument),
     planReview.review.approvalDigest,
@@ -4763,35 +6055,169 @@ else
     ["start-implementation", "--session-handle", handle],
     item.env,
   );
+  const changedBytes = await handlePreToolUse(
+    {
+      hook_event_name: "PreToolUse",
+      session_id: sessionId,
+      tool_name: "Edit",
+      tool_use_id: "write-binding-changed-bytes",
+      tool_input: {
+        file_path: "Program.cs",
+        old_string: "qaas-self-test-ok",
+        new_string: "qaas-self-test-changed",
+      },
+    },
+    { env: item.env },
+  );
+  assert.equal(
+    changedBytes.hookSpecificOutput.permissionDecision,
+    "deny",
+  );
+  assert.match(
+    changedBytes.hookSpecificOutput.permissionDecisionReason,
+    /approved targetSha256/u,
+  );
+  const wrongOperation = await handlePreToolUse(
+    {
+      hook_event_name: "PreToolUse",
+      session_id: sessionId,
+      tool_name: "Write",
+      tool_use_id: "write-binding-wrong-operation",
+      tool_input: {
+        file_path: "Program.cs",
+        content: approvedProgramBytes.toString("utf8"),
+      },
+    },
+    { env: item.env },
+  );
+  assert.equal(
+    wrongOperation.hookSpecificOutput.permissionDecision,
+    "deny",
+  );
+  assert.match(
+    wrongOperation.hookSpecificOutput.permissionDecisionReason,
+    /operation does not match/u,
+  );
+  const exactNoOpEvent = {
+    hook_event_name: "PreToolUse",
+    session_id: sessionId,
+    tool_name: "Edit",
+    tool_use_id: "write-binding-happy",
+    tool_input: {
+      file_path: "Program.cs",
+      old_string: "qaas-self-test-ok",
+      new_string: "qaas-self-test-ok",
+    },
+  };
+  const exactNoOp = await handlePreToolUse(
+    exactNoOpEvent,
+    { env: item.env },
+  );
+  assert.equal(
+    exactNoOp.hookSpecificOutput.permissionDecision,
+    "allow",
+    exactNoOp.hookSpecificOutput.permissionDecisionReason,
+  );
+  const exactNoOpPost = await handlePostToolUse(
+    {
+      ...exactNoOpEvent,
+      hook_event_name: "PostToolUse",
+      tool_response: { success: true },
+    },
+    { env: item.env },
+  );
+  assert.equal(
+    exactNoOpPost.hookSpecificOutput.hookEventName,
+    "PostToolUse",
+  );
   const originalAppData = item.env.APPDATA;
   item.env.APPDATA = `${originalAppData ?? "appdata"}-changed-after-approval`;
-  await assert.rejects(
-    runApproved(
-      ["--session-handle", handle, "--action", "restore"],
-      item.env,
-    ),
-    /process specification does not match/u,
-  );
-  if (originalAppData === undefined) delete item.env.APPDATA;
-  else item.env.APPDATA = originalAppData;
-  const restored = await runApproved(
+  const restoreHandoff = await runApproved(
     ["--session-handle", handle, "--action", "restore"],
     item.env,
   );
+  assert.deepEqual(
+    restoreHandoff.exactReviewedCommands[0].environmentVariableNames,
+    ["USERPROFILE", "APPDATA", "LOCALAPPDATA"],
+  );
+  assert.doesNotMatch(
+    JSON.stringify(restoreHandoff),
+    new RegExp(item.env.APPDATA.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "u"),
+    "handoff must disclose environment names, never environment values",
+  );
+  if (originalAppData === undefined) delete item.env.APPDATA;
+  else item.env.APPDATA = originalAppData;
+  assert.equal(restoreHandoff.successful, false);
+  assert.equal(restoreHandoff.status, "user-run-required");
+  await mkdir(path.join(item.project, "obj"), { recursive: true });
+  await writeFile(
+    path.join(item.project, "obj", "project.assets.json"),
+    '{"version":3}',
+    "utf8",
+  );
+  const restored = await importUserRunEvidence({
+    item,
+    handle,
+    action: "restore",
+    handoff: restoreHandoff,
+    stdout: "Restore completed.",
+  });
   assert.equal(restored.successful, true, JSON.stringify(restored, null, 2));
-  const built = await runApproved(
+  assert.equal(restored.phase, "IMPLEMENTING");
+  const buildHandoff = await runApproved(
     ["--session-handle", handle, "--action", "build"],
     item.env,
   );
+  const built = await importUserRunEvidence({
+    item,
+    handle,
+    action: "build",
+    handoff: buildHandoff,
+    stdout: "Build succeeded.",
+  });
   assert.equal(built.phase, "BUILD_VERIFIED", JSON.stringify(built, null, 2));
-  const templated = await runApproved(
+  const templateHandoff = await runApproved(
     ["--session-handle", handle, "--action", "template"],
     item.env,
   );
+  await mkdir(path.join(item.project, "rendered"), { recursive: true });
+  await writeFile(
+    path.join(item.project, "rendered", "template.json"),
+    '{"status":"ok"}',
+    "utf8",
+  );
+  const templated = await importUserRunEvidence({
+    item,
+    handle,
+    action: "template",
+    handoff: templateHandoff,
+    stdout: "qaas-template-ok",
+  });
   assert.equal(
     templated.phase,
     "IMPLEMENTED_NOT_RUN",
     JSON.stringify(templated, null, 2),
+  );
+  const userRunStaticFingerprint = (
+    await context.authority.readSigned(
+      "fingerprints/staticVerificationFingerprint.json",
+    )
+  ).payload;
+  assert.ok(
+    userRunStaticFingerprint.entries.some(
+      (entry) =>
+        entry.path.replaceAll("\\", "/") === "rendered/template.json",
+    ),
+    JSON.stringify(
+      {
+        exclusions: userRunStaticFingerprint.exclusions,
+        renderedEntries: userRunStaticFingerprint.entries.filter((entry) =>
+          entry.path.includes("rendered"),
+        ),
+      },
+      null,
+      2,
+    ),
   );
   const timedOutTree = await runProcess({
     program: dotnet.resolvedPath,
@@ -4888,6 +6314,24 @@ else
     ],
     item.env,
   );
+  const renderedTemplatePath = path.join(
+    item.project,
+    "rendered",
+    "template.json",
+  );
+  await writeFile(
+    renderedTemplatePath,
+    '{"status":"tampered-after-user-evidence"}',
+    "utf8",
+  );
+  await assert.rejects(
+    runWorkflowAuthority(
+      ["prepare", "--session-handle", handle, "--kind", "execution"],
+      item.env,
+    ),
+    /Project fingerprint is stale/u,
+  );
+  await writeFile(renderedTemplatePath, '{"status":"ok"}', "utf8");
   const executionReview = await runWorkflowAuthority(
     ["prepare", "--session-handle", handle, "--kind", "execution"],
     item.env,
@@ -5024,19 +6468,30 @@ else
     toolUseId: "approve-execution",
   });
   if (curl.available) {
-    const mutated = await runApproved(
+    const mutationHandoff = await runApproved(
       ["--session-handle", handle, "--action", "mutation"],
       item.env,
     );
+    const mutated = await importUserRunEvidence({
+      item,
+      handle,
+      action: "mutation",
+      handoff: mutationHandoff,
+      stdout: "created",
+    });
     assert.equal(mutated.phase, "EXECUTION_APPROVED");
     assert.equal(mutated.successful, true);
-    assert.equal(mutationRequestCount, 1);
+    assert.equal(
+      mutationRequestCount,
+      0,
+      "the plugin must not execute the reviewed infrastructure command",
+    );
     await assert.rejects(
       runApproved(
         ["--session-handle", handle, "--action", "mutation"],
         item.env,
       ),
-      /already been executed/u,
+      /stale manual-execution handoff/u,
     );
   }
   const originalProgram = await readFile(
@@ -5056,12 +6511,29 @@ else
     /fingerprint is stale/u,
   );
   await writeFile(path.join(item.project, "Program.cs"), originalProgram, "utf8");
-  const executed = await runApproved(
+  const testRunHandoff = await runApproved(
     ["--session-handle", handle, "--action", "test-run"],
     item.env,
   );
-  assert.equal(executed.phase, "VERIFIED");
+  await mkdir(path.join(item.project, "allure-results"), {
+    recursive: true,
+  });
+  await writeFile(
+    path.join(item.project, "allure-results", "report.json"),
+    '{"passed":true}',
+    "utf8",
+  );
+  const executed = await importUserRunEvidence({
+    item,
+    handle,
+    action: "test-run",
+    handoff: testRunHandoff,
+    stdout: "qaas-self-test-ok",
+  });
+  assert.equal(executed.phase, "DIAGNOSING");
   assert.equal(executed.successful, true);
+  assert.equal(executed.automatedExecution, false);
+  assert.equal(executed.trustedRunnerAttested, false);
   await writeFile(
     path.join(item.project, "allure-results", "report.json"),
     '{"passed":true,"token":"synthetic-sensitive-value"}',
@@ -5147,6 +6619,7 @@ else
   assert.equal(
     queryPreTool.hookSpecificOutput.permissionDecision,
     "allow",
+    JSON.stringify(queryPreTool, null, 2),
   );
   const queried = await runApprovedQuery(
     ["--session-handle", handle],

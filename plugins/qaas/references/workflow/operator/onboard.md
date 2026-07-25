@@ -64,8 +64,33 @@
 
 ## Optional capability registry
 
-Only when a relevant installed integration has been probed and bounded, encode
-an `integration-capabilities.schema.json` object and use:
+For a configured WikiAll MCP, first prepare one discovery-only review:
+
+```text
+node "${CLAUDE_PLUGIN_ROOT}/scripts/workflow-authority.mjs" prepare --session-handle <handle> --kind docs-mcp-probe --server <exact-mcp-server-name> [--timeout-ms <1..60000>] [--output-limit-bytes <1024..262144>] [--tool-limit <1..256>] [--schema-limit-bytes <256..65536>]
+```
+
+Apply the [review transaction](review-and-safety.md#review-transaction), then
+run the same bound values:
+
+```text
+node "${CLAUDE_PLUGIN_ROOT}/scripts/docs-mcp-discover.mjs" --session-handle <handle> --server <same-server> [--timeout-ms <same-value>] [--output-limit-bytes <same-value>] [--tool-limit <same-value>] [--schema-limit-bytes <same-value>]
+node "${CLAUDE_PLUGIN_ROOT}/scripts/docs-mcp-discover.mjs" --session-handle <handle> --show-tool <exact-returned-tool-name>
+```
+
+The one-use probe performs only `initialize`,
+`notifications/initialized`, and bounded `tools/list`; it never invokes
+`tools/call` or retries after failure. Its timeout is transaction-wide and its
+output limit is aggregate across the three response bodies; its fixed request
+limit is three. Here
+`probePassed` means that exact transport/schema probe
+succeeded, not that a documentation search or read ran. Copy the returned
+signed `probeEvidenceDigest` into each selected `docs.search` and `docs.read`
+capability. `commit-capabilities` rejects a server, tool, schema, transport, or
+evidence mismatch.
+
+Only after this evidence exists, encode an
+`integration-capabilities.schema.json` object and use:
 
 ```text
 node "${CLAUDE_PLUGIN_ROOT}/scripts/workflow-authority.mjs" stage-capabilities --session-handle <handle> --content-base64 <contentBase64>
@@ -74,12 +99,19 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/workflow-authority.mjs" commit-capabilities 
 ```
 
 Apply the [review transaction](review-and-safety.md#review-transaction). Never
-invent an MCP tool name or schema. For QaaS documentation queries use the
-bounded helper, not a direct MCP call:
+invent an MCP tool name or schema. When the signed registry proves exactly one
+complete, read-only `docs.search`/`docs.read` pair for the same WikiAll server,
+the documentation resolver discovers it automatically. An incomplete or
+ambiguous set is unavailable, not a prompt to guess. For QaaS documentation
+queries use the bounded helper, not a direct MCP call:
 
 ```text
 node "${CLAUDE_PLUGIN_ROOT}/scripts/docs-read.mjs" --session-handle <handle> --query <question>
 ```
 
-An optional `--relative-url <stable-id>` may narrow a known page. `unsupported`
-means stop and ask; it never means infer.
+For an HTTP search candidate, pass its returned absolute `url` and `source`
+together as `--relative-url <url> --source <source>`. This source binding is
+mandatory when several HTTP sources are configured and prevents the focused
+read from drifting to a recovered or higher-priority mirror. For a WikiAll MCP
+stable identifier, omit `--source` so the signed `docs.read` capability remains
+authoritative. `unsupported` means stop and ask; it never means infer.

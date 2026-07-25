@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/eldarush/QaaS-Plugin/schemas/query-plan.schema.json",
+  "$id": "https://github.com/TheSmokeTeam/QaaS-Plugin/schemas/query-plan.schema.json",
   "title": "QaaS bounded read-only observability query plan",
   "description": "A separately reviewed, one-use, read-only observability transaction. It is not part of an execution plan.",
   "type": "object",

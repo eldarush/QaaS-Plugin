@@ -34,7 +34,6 @@ entries. Checkpoint before compaction; never use a conversation summary as a
 replacement.
 
 ## Exact content transport
-
 For context, readiness, plan, execution, query, mutation, capability, source,
 or checkpoint content, call the plugin-provided tool
 `mcp__qaas_local__encode_text` with exactly:
@@ -46,8 +45,11 @@ or checkpoint content, call the plugin-provided tool
 The plugin auto-registers this dependency-free local stdio server. It accepts
 only that one field, rejects secret-like text, enforces a 32 KiB UTF-8 limit,
 and returns Base64 with byte length and `transportSha256`. That checksum is
-transport evidence, never the artifact `digest`; authority computes artifact
-digests. Copy only `contentBase64` into the staging command. Never hand-encode
+transport evidence, never the top-level artifact `digest`; authority computes
+artifact digests. When and only when the input is one planned file's exact
+complete target content, copy it to that entry's
+`changes[].targetSha256`; otherwise copy only `contentBase64` into the staging
+command. Never hand-encode
 Base64 or use Bash, a pipe, heredoc, redirection, temporary project file,
 command substitution, or an interpreter snippet for content transport.
 
@@ -60,7 +62,6 @@ unavailable or rejects safe content, stop with
 `exact staging transport unavailable`.
 
 ## Invocation rule
-
 Invoke one helper at a time with the Bash tool using this exact shape:
 
 ```text
@@ -86,7 +87,6 @@ The launcher accepts only the three attested scripts, reuses the current Node
 executable for its child, requires no shell, and fails closed on launcher or
 child failure. Doctor blocks a project-controlled `PATH` shadow before writes.
 ## Status and stop rules
-
 Read signed status with:
 
 ```text

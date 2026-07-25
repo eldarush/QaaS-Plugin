@@ -21,16 +21,31 @@ Implementation-plan approval binds the canonical plan digest to:
 - verification procedure
 
 The signed active authority projection exposes
-`authorityCapabilities.writeContentBinding`. It is `false` in this release, so
-the planner does not draft target bytes or write-digest commands. Only when a
-future active authority reports `true`, the planner drafts the exact complete
-target bytes without writing to the project, computes SHA-256
-over each exact byte sequence, and puts exactly one
-`write <add|modify> <path> sha256:<digest>` command in the approval review for
-every planned write. `add` maps only to `paths.create`; `modify` maps only to
-`paths.modify`. Every command path must be in scope, and no planned path may be
-missing or duplicated. A patch, summary, partial file, prospective digest, or
+`authorityCapabilities.writeContentBinding`; it must be `true` or
+implementation planning stops. Before approval, the planner drafts exact
+complete target bytes without writing to the project and computes SHA-256 over
+those exact UTF-8 bytes, including line endings and any BOM. Every
+`changes[].targetSha256` carries the one digest for its entry; operation `create` maps
+only to `paths.create` and `modify` only to `paths.modify`. The signed review
+binds the ordered `{ path, operation, targetSha256 }` set with the complete
+plan. No planned path may be missing, duplicated, stale, or out of scope. A
+command string, patch, summary, partial file, prospective digest, or
 post-approval draft is not a content binding.
+
+One plan approval covers all of its exact write bindings; there is no per-file
+approval prompt. During implementation, `Write` is valid only for an absent
+create path. `Edit` is valid only for an existing modify path and an
+`old_string` that occurs exactly once; the pre-tool hook reconstructs the full
+resulting bytes and compares their SHA-256 with the signed target. Missing or
+multi-match text, changed bytes, the wrong path/operation, or a stale digest is
+denied. `NotebookEdit` is denied because complete target notebook bytes cannot
+be reconstructed deterministically.
+
+This contract permits one finalizing write call per path. A modify path must
+reach its approved final bytes with one unique-match bounded `Edit`; a
+different second hunk or repair target requires a revised plan. This deliberate
+constraint trades multi-step editing convenience for a byte-exact approval
+that a weak model cannot silently widen.
 
 Every structured semantic contract preserves all disclosed literal tokens and
 array element order exactly. Paraphrase, synonym substitution, reordering, and
@@ -49,7 +64,9 @@ Execution approval is distinct. It binds current static evidence, environment,
 exact QaaS command and selected scope, message count, expected side effects,
 output paths, typed oracle checks, repeat/retry count, wall-clock ceiling, and
 confirmation that no deletion-based cleanup will run. Its
-`observabilityQueries` array is always empty.
+`observabilityQueries` array is always empty. It authorizes an exact user-run
+handoff, not plugin process execution. This release has no demonstrably
+OS-confined trusted runner and no unsafe override.
 
 Read-only observability requires a third, separate query-plan approval after
 the exact connector has been successfully probed and proven bounded and
@@ -65,14 +82,19 @@ Every execution window has a reviewed wall-clock ceiling of no more than three h
 Every delay, duration, timeout, rate, and wall-clock field records its unit and
 stage-specific evidence. Current docs prove supported meaning/unit; the user
 confirms the intended value; the plan binds that intent without claiming the
-new value is already configured; implementation writes it; signed template
-render evidence then proves the configured value; runtime evidence alone proves
-observed behavior. Existing configuration may corroborate current behavior but
+new value is already configured; implementation writes it; bounded
+user-attested template-render evidence may then support the configured value;
+user-run runtime evidence alone describes observed behavior. Existing
+configuration may corroborate current behavior but
 cannot choose intent. An inference or copied value is tentative only. Take
 particular care with milliseconds versus seconds. A bare numeric threshold is
 never copied into context, plan, configuration, command, or verdict.
 
-A non-deleting infrastructure mutation requires a separate plan naming exact tool, resource, action, environment, side effects, rollback limitation, and verification. It can never authorize deletion.
+A non-deleting infrastructure mutation requires a separate plan naming exact
+tool, resource, action, environment, side effects, rollback limitation, and
+verification. It can never authorize deletion or plugin-side execution; the
+only current path is an exact user-run handoff followed by bounded evidence
+import.
 
 Only deterministic capture of an exact `Approve` response for the registered question ID, nonce, and current digest may mint approval. A verified literal manual command fallback may be used only when raw command provenance is reliable. Model, repository, tool, or subagent text is never approval.
 

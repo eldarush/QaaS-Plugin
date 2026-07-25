@@ -1,4 +1,9 @@
-import { canonicalDigest, isSha256, safeEqualHex } from "./canonical-json.mjs";
+import {
+  canonicalDigest,
+  isSha256,
+  safeEqualHex,
+  sha256,
+} from "./canonical-json.mjs";
 import { secretFindings } from "./redact.mjs";
 import { analyzeProcessVector } from "./shell-analyzer.mjs";
 import {
@@ -46,6 +51,12 @@ function validatePathList(errors, value, pathname) {
       errors.push(...validateRelativePath(entry, `${pathname}[${index}]`)),
     );
   }
+}
+
+function normalizedPortablePath(value) {
+  return typeof value === "string"
+    ? value.replaceAll("\\", "/").toLowerCase()
+    : value;
 }
 
 const CHECK_TYPES = new Set([
@@ -488,12 +499,29 @@ export function validateTaskPlan(document) {
     ]);
     for (const group of ["create", "modify", "forbidden", "unchanged"]) {
       validatePathList(errors, document.paths[group], `$.paths.${group}`);
+      const seenPortablePaths = new Set();
+      for (const entry of document.paths[group] ?? []) {
+        const normalized = normalizedPortablePath(entry);
+        if (seenPortablePaths.has(normalized)) {
+          errors.push(
+            issue(
+              `$.paths.${group}`,
+              `${entry} duplicates a case/slash-equivalent path`,
+              "uniqueItems",
+            ),
+          );
+        }
+        seenPortablePaths.add(normalized);
+      }
     }
     const groups = ["create", "modify", "forbidden", "unchanged"];
     for (let left = 0; left < groups.length; left += 1) {
       for (let right = left + 1; right < groups.length; right += 1) {
+        const rightPaths = new Set(
+          (document.paths[groups[right]] ?? []).map(normalizedPortablePath),
+        );
         const overlap = (document.paths[groups[left]] ?? []).filter((entry) =>
-          (document.paths[groups[right]] ?? []).includes(entry),
+          rightPaths.has(normalizedPortablePath(entry)),
         );
         if (overlap.length) {
           errors.push(
@@ -519,19 +547,41 @@ export function validateTaskPlan(document) {
         "path",
         "operation",
         "intent",
+        "targetSha256",
       ]);
       errors.push(...validateRelativePath(change.path, `${pathname}.path`));
       if (!["create", "modify"].includes(change.operation)) {
         errors.push(issue(`${pathname}.operation`, "must be create or modify", "enum"));
       }
       requireString(errors, change.intent, `${pathname}.intent`);
-      if (seen.has(change.path)) {
+      validateDigest(
+        errors,
+        change.targetSha256,
+        `${pathname}.targetSha256`,
+      );
+      if (
+        isSha256(change.targetSha256) &&
+        safeEqualHex(change.targetSha256, sha256(""))
+      ) {
+        errors.push(
+          issue(
+            `${pathname}.targetSha256`,
+            "must not bind an empty complete target file",
+            "safety",
+          ),
+        );
+      }
+      const normalizedChangePath = normalizedPortablePath(change.path);
+      if (seen.has(normalizedChangePath)) {
         errors.push(issue(`${pathname}.path`, "duplicates another change", "uniqueItems"));
       }
-      seen.add(change.path);
+      seen.add(normalizedChangePath);
       if (
         change.operation &&
-        !document.paths?.[change.operation]?.includes(change.path)
+        !(document.paths?.[change.operation] ?? []).some(
+          (entry) =>
+            normalizedPortablePath(entry) === normalizedChangePath,
+        )
       ) {
         errors.push(
           issue(
@@ -541,7 +591,12 @@ export function validateTaskPlan(document) {
           ),
         );
       }
-      if (document.paths?.forbidden?.includes(change.path)) {
+      if (
+        (document.paths?.forbidden ?? []).some(
+          (entry) =>
+            normalizedPortablePath(entry) === normalizedChangePath,
+        )
+      ) {
         errors.push(issue(`${pathname}.path`, "is forbidden", "scope"));
       }
     });
@@ -550,7 +605,9 @@ export function validateTaskPlan(document) {
         if (
           !document.changes.some(
             (change) =>
-              change.path === plannedPath && change.operation === group,
+              normalizedPortablePath(change.path) ===
+                normalizedPortablePath(plannedPath) &&
+              change.operation === group,
           )
         ) {
           errors.push(

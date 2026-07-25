@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/eldarush/QaaS-Plugin/schemas/execution-plan.schema.json",
+  "$id": "https://github.com/TheSmokeTeam/QaaS-Plugin/schemas/execution-plan.schema.json",
   "title": "QaaS execution plan",
   "type": "object",
   "additionalProperties": false,

@@ -21,6 +21,7 @@ const SCHEMAS = Object.freeze([
   "mutation-plan.schema.json",
   "query-plan.schema.json",
   "integration-capabilities.schema.json",
+  "docs-mcp-probe.schema.json",
   "source-checkout.schema.json",
   "approval-event.schema.json",
   "evidence-event.schema.json",
@@ -45,12 +46,14 @@ const REQUIRED_SCRIPTS = Object.freeze([
   "run-approved.mjs",
   "query-approved.mjs",
   "docs-read.mjs",
+  "docs-mcp-discover.mjs",
   "source-read.mjs",
   "source-checkout.mjs",
 ]);
 const REQUIRED_SUPPORT_FILES = Object.freeze([
   "scripts/lib/project-evidence-inventory.mjs",
   "scripts/lib/interview-route-selector.mjs",
+  "scripts/lib/docs-mcp-probe.mjs",
   "references/project-mapping/interview-routing.md",
 ]);
 

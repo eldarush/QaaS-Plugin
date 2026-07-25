@@ -81,6 +81,7 @@ export function validateCapabilityRegistry(registry) {
         "outputLimitBytes",
         "outputLimitItems",
         "probePassed",
+        "probeEvidenceDigest",
         "userApproved",
       ]);
       for (const key of Object.keys(capability)) {
@@ -157,6 +158,26 @@ export function validateCapabilityRegistry(registry) {
       }
       if (typeof capability.probePassed !== "boolean") {
         errors.push(`${prefix}.probePassed must be a boolean`);
+      }
+      if (
+        ["docs.search", "docs.read"].includes(capability.logicalOperation) &&
+        capability.probePassed === true &&
+        (
+          typeof capability.probeEvidenceDigest !== "string" ||
+          !/^[a-f0-9]{64}$/u.test(capability.probeEvidenceDigest)
+        )
+      ) {
+        errors.push(
+          `${prefix}.probeEvidenceDigest must bind a bounded documentation MCP schema probe`,
+        );
+      } else if (
+        capability.probeEvidenceDigest !== undefined &&
+        (
+          typeof capability.probeEvidenceDigest !== "string" ||
+          !/^[a-f0-9]{64}$/u.test(capability.probeEvidenceDigest)
+        )
+      ) {
+        errors.push(`${prefix}.probeEvidenceDigest must be SHA-256`);
       }
       if (
         !Number.isInteger(capability.outputLimitItems) ||

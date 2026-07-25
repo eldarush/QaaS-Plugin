@@ -7,12 +7,15 @@ import { fileURLToPath } from "node:url";
 
 const toolDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(toolDirectory, "..");
-const ignoredTopLevel = new Set([".git", "dist"]);
+const ignoredDirectoryNames = new Set([".git", "dist", "node_modules"]);
 const allowedTopLevel = new Set([
   ".claude-plugin",
   ".github",
   "plugins",
   "docs",
+  "docs-site",
+  "deploy",
+  "validation",
   "tools",
   ".gitattributes",
   ".gitignore",
@@ -29,7 +32,7 @@ function walk(directory, relativeBase = "") {
   for (const entry of fs
     .readdirSync(directory, { withFileTypes: true })
     .sort((left, right) => left.name.localeCompare(right.name, "en"))) {
-    if (relativeBase === "" && ignoredTopLevel.has(entry.name)) continue;
+    if (entry.isDirectory() && ignoredDirectoryNames.has(entry.name)) continue;
     const relativePath = path.posix.join(
       relativeBase,
       entry.name.replaceAll("\\", "/"),

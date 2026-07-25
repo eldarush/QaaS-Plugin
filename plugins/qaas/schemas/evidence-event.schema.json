@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/eldarush/QaaS-Plugin/schemas/evidence-event.schema.json",
+  "$id": "https://github.com/TheSmokeTeam/QaaS-Plugin/schemas/evidence-event.schema.json",
   "title": "QaaS sanitized evidence event",
   "type": "object",
   "additionalProperties": false,
@@ -45,4 +45,3 @@
     "digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
   }
 }
-

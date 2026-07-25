@@ -10,7 +10,9 @@ const SOURCE_CONFIGURATION = Object.freeze({
     legacyCredential: "QAAS_GITLAB_CREDENTIAL_ENV",
   }),
   artifactory: Object.freeze({
-    builtIn: "artifactory",
+    reviewedProjectInput: true,
+    legacyUrl: "QAAS_ARTIFACTORY_URL",
+    legacyCredential: "QAAS_ARTIFACTORY_CREDENTIAL_ENV",
   }),
   nuget: Object.freeze({
     projectPackageSource: true,
@@ -83,11 +85,6 @@ function configuredBase(
     : null;
   const directBaseProvided =
     projectBaseUrl !== null && projectBaseUrl !== undefined;
-  if (builtIn && directBaseProvided) {
-    throw new Error(
-      "The built-in Artifactory endpoint does not accept a base URL override",
-    );
-  }
   const legacyBase =
     allowLegacyEnvironment && configuration.legacyUrl
       ? env[configuration.legacyUrl] ?? null
@@ -143,11 +140,6 @@ function configuredBase(
     );
   }
   const selectedCredentialEnv = credentialEnv ?? legacyCredentialEnv;
-  if (builtIn && selectedCredentialEnv !== null) {
-    throw new Error(
-      "The built-in Artifactory endpoint does not accept a credential selector",
-    );
-  }
   if (
     selectedCredentialEnv !== null &&
     (typeof selectedCredentialEnv !== "string" ||

@@ -1,6 +1,8 @@
 # Commands
 
-These are project-evidenced command specifications, not authority to execute.
+These are project-evidenced command specifications, not authority for the
+plugin to execute. This release shows exact reviewed vectors for the user to
+run outside the plugin and imports only bounded diagnostic evidence.
 
 | Purpose | Working directory | Program and arguments | Prerequisites | Expected exit | Covered suites/cases/executables | Evidence |
 |---|---|---|---|---|---|---|

@@ -1,0 +1,14 @@
+{
+  "status": "passed",
+  "scope": "static synthetic fixture verification",
+  "checks": {
+    "baselineSha256": 3,
+    "observedYamlPatternLines": 5,
+    "inputJson": "parsed-and-matched",
+    "expectedJson": "parsed-and-matched",
+    "documentationCaptures": 2,
+    "captureTools": 2
+  },
+  "claudeCodeExecuted": false,
+  "qaasRuntimeExecuted": false
+}

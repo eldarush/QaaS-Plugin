@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.4.0 — Documentation deployment and source discovery
+
+- Added canonical Helm, WikiAll HTTP/MCP, and local ZIM documentation
+  selectors with deterministic provenance, strict validation, and a
+  fail-closed discovery contract.
+- Added `qaas-plugin-docs`, a dependency-free, responsive documentation
+  surface designed with the Impeccable method for offline container,
+  Kubernetes, and GitHub Pages deployment.
+- Added a non-root, read-only-compatible multi-platform container, a hardened
+  Kubernetes manifest, an offline Linux/amd64 image archive, and release
+  checksums and metadata.
+- Added pinned GitHub workflows that validate the plugin and documentation,
+  publish GitHub Pages, push versioned Docker Hub images, and attach all
+  release artifacts.
+- Moved canonical repository identities and marketplace metadata to the
+  `TheSmokeTeam` organization.
+
+This release remains a Codex-proxy preview until it passes the target
+MiniMax M2.7 and internal air-gapped acceptance checklist.
+
+`0.3.0` was an unreleased development milestone; its changes are incorporated
+into `0.4.0` rather than published under a separate tag.
+
 ## 0.3.0 — Diverse-project and instruction hardening
 
 - Added a bounded, read-only project evidence inventory and conditional

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/eldarush/QaaS-Plugin/schemas/context-index.schema.json",
+  "$id": "https://github.com/TheSmokeTeam/QaaS-Plugin/schemas/context-index.schema.json",
   "title": "QaaS project context index",
   "type": "object",
   "additionalProperties": false,

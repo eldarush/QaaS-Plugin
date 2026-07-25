@@ -12,7 +12,7 @@ review uses the same transaction:
    object—same prompt, header, options, and `multiSelect`.
 5. If the answer is `Revise` or `Cancel`, let the post-tool hook record that
    exact decision and transition to the bounded safe phase. Do not call a
-   commit/start/run helper. `Revise` requires a newly staged artifact and fresh
+   commit/start/handoff helper. `Revise` requires a newly staged artifact and fresh
    review; `Cancel` grants no authority.
 6. After `Approve`, call only the next helper named by the applicable procedure
    in the [protocol index](../operator-protocol.md). Conversational approval, a

@@ -19,9 +19,12 @@ flowchart LR
     W --> P["Canonical plan"]
     P --> G["Deterministic phase and approval gate"]
     G --> T["Pre-tool safety decision"]
-    T --> X["Approved project action"]
+    T --> X["Approved project write or read-only helper"]
     X --> E["Post-tool evidence ledger"]
-    E --> V["Build, template, run, and diagnosis verdict"]
+    G --> H["Exact user-run command handoff"]
+    H --> U2["User executes outside plugin"]
+    U2 --> I["Bounded user evidence import"]
+    I --> V["Diagnostic verdict"]
 ```
 
 The model may propose, explain, map, and implement. It may not create its own
@@ -68,13 +71,14 @@ stateDiagram-v2
     TaskInterview --> PlanReview
     PlanReview --> PlanApproved: approved exact plan
     PlanApproved --> Implementing
-    Implementing --> StaticVerified
-    StaticVerified --> ExecutionReview
+    Implementing --> BuildEvidence: bounded user-run build import
+    BuildEvidence --> ImplementedNotRun: bounded user-run template import
+    StaticVerified --> ExecutionReview: legacy/current preexisting verified state
     ExecutionReview --> ExecutionApproved
-    ExecutionApproved --> Running
-    Running --> Diagnosing: failure in approved scope
+    ExecutionApproved --> Running: bounded user evidence correlation only
+    Running --> Diagnosing: imported evidence
     Diagnosing --> StaticVerified: repaired and reverified
-    Running --> Complete: evidence satisfies oracle
+    Running --> Complete: unavailable without trusted-runner evidence
     Ready --> Stale: project/context changed
     PlanApproved --> Stale: bound digest changed
     StaticVerified --> Stale: environment/command changed
@@ -82,6 +86,9 @@ stateDiagram-v2
 
 Illegal transitions fail closed. A relevant fingerprint change marks the
 dependent phase `STALE`; it never silently carries an old approval forward.
+In this release, no transition launches project or external code. The apparent
+execution states are retained for schema/backward compatibility and bounded
+user-evidence correlation.
 
 ## Durable project context
 
@@ -129,8 +136,9 @@ Four related digests narrow invalidation:
 1. `projectFingerprint`: relevant project inputs and mapped external artifacts.
 2. `contextFingerprint`: approved topic files and readiness.
 3. `planFingerprint`: task plan, package snapshot, and intended diff envelope.
-4. `staticVerificationFingerprint`: final project, dependency/build evidence,
-   and rendered QaaS template bound to execution.
+4. `staticVerificationFingerprint`: a previously established final project,
+   dependency/build evidence, and rendered QaaS template bound to execution.
+   This release cannot create a trusted-runner version automatically.
 
 Fingerprints normalize paths cross-platform and hash file content. Generated
 outputs count only when their output class and producing tool were enumerated
@@ -138,11 +146,23 @@ in the plan.
 
 ## Documentation and integrations
 
-The docs resolver prefers an approved read-only MCP documentation source or
-administrator-provisioned local ZIM, then the immutable distribution-built
-documentation endpoint. There is no per-project or runtime docs URL. It records
-source identity, page, artifact/commit digest when available, excerpt digest,
-applicable package snapshot, and compatibility decision.
+The docs resolver prefers exactly one approved, successfully probed WikiAll MCP
+`docs.search`/`docs.read` pair, then the internal Helm/Kubernetes documentation
+base, WikiAll HTTP base, public distribution fallback, and an
+administrator-provisioned local ZIM. The three internal transports are selected
+through `QAAS_DOCS_HELM_URL`, `QAAS_DOCS_WIKIALL_URL`, and
+`QAAS_DOCS_MCP_URL`; an optional MCP credential is referenced only by the
+separate `QAAS_DOCS_MCP_CREDENTIAL_ENV` selector. Exact selectors, sanitized
+endpoint identities, source/artifact digests, and precedence are attested
+without a network request. Retrieved evidence records source identity, page,
+artifact/commit digest when available, excerpt digest, applicable package
+snapshot, and compatibility decision.
+
+The packaged MCP configuration remains restricted to the fixed local safety
+encoder. WikiAll server configuration belongs in an explicitly reviewed user
+or project MCP configuration. Presence is insufficient: the resolver discovers
+only the exact server/tool/schema pair committed in the signed capability
+registry and never guesses tool names.
 
 External repository and artifact reads use capability descriptors rather than
 assuming a tool exists. Existing local content is preferred. A user-supplied
@@ -179,16 +199,24 @@ The pre-tool handler classifies:
 - A one-use reference checkout covered by its exact signed source approval.
 - Writes covered by a signed context or implementation transaction.
 - Tool-owned generated outputs covered by the plan.
-- Test execution covered by an execution plan.
+- Exact test user-run handoff covered by an execution plan; never plugin
+  process execution.
 - A separate one-use read-only observability query covered by its own canonical
   query plan, current proven capability, review, and approval. Execution plans
   always keep `observabilityQueries` empty.
-- Non-deleting infrastructure mutation covered by a mutation plan.
+- Exact infrastructure-mutation user-run handoff covered by a mutation plan;
+  never plugin process execution.
 - Always-denied deletion/move/rename/cleanup and authority access.
 
 Shell and MCP inputs are parsed conservatively. Variable expansion,
 subcommands, redirection, pipelines, aliases, opaque scripts, or an unknown MCP
 schema cannot be treated as harmless without a matching exact authorization.
+Even a syntactically safe command can execute destructive project/package/hook
+behavior. Because hooks are not an OS sandbox, the runtime hard-disables
+automatic restore, build, template, test-run, infrastructure-mutation, and
+comparable project/external-code processes. There is no environment or
+approval override. `run-approved.mjs` emits the exact signed vector for the
+user and reads only one fixed bounded evidence file afterward.
 
 After an allowed action, the post-tool handler records the resolved invocation,
 exit code, output/evidence hashes, redacted excerpt, resulting fingerprints,
@@ -201,6 +229,7 @@ redundant `name` field for Claude Code >=2.1.180 namespace compatibility. The
 plugin does not rely on later agent-team APIs. Windows paths and PowerShell are
 first-class; path canonicalization and CI also cover Linux.
 
-Claude hooks are not an OS sandbox. The security promise applies while the
-installed plugin and attested hooks are active and the local user has not
-tampered with their authority storage.
+Claude hooks are not an OS sandbox. They protect model-mediated workflow
+operations while active, but are not claimed to confine child processes.
+Automatic project/external-code execution remains disabled even with valid
+hooks and approvals.

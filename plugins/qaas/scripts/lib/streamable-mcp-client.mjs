@@ -1,8 +1,26 @@
-import { canonicalDigest } from "./canonical-json.mjs";
+import {
+  canonicalDigest,
+  canonicalJson,
+} from "./canonical-json.mjs";
+import {
+  DOCS_MCP_PROBE_OPERATIONS,
+  DOCS_MCP_PROBE_PROTOCOL_VERSION,
+} from "./docs-mcp-probe.mjs";
 import { secretFindings } from "./redact.mjs";
 
-const PROTOCOL_VERSION = "2025-03-26";
+const PROTOCOL_VERSION = DOCS_MCP_PROBE_PROTOCOL_VERSION;
 const MAX_PROTOCOL_BYTES = 1024 * 1024;
+const FETCH_TRANSPORT_ERROR_CODES = new Set([
+  "EAI_AGAIN",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "ENETUNREACH",
+  "ENOTFOUND",
+  "ETIMEDOUT",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_SOCKET",
+]);
 
 function configuredEndpoint(env) {
   const raw = env.QAAS_DOCS_MCP_URL;
@@ -38,6 +56,14 @@ function credential(env) {
   }
   const value = env[name];
   if (!value) throw new Error(`Configured MCP credential variable ${name} is unset`);
+  if (
+    Buffer.byteLength(value, "utf8") > 8 * 1024 ||
+    !/^[\x21-\x7e]+$/u.test(value)
+  ) {
+    throw new Error(
+      `Configured MCP credential variable ${name} must contain at most 8 KiB of visible ASCII`,
+    );
+  }
   return { name, value };
 }
 
@@ -100,27 +126,51 @@ async function boundedResponse(response, limitBytes) {
     }
     chunks.push(value);
   }
-  return Buffer.concat(chunks).toString("utf8");
+  return {
+    bytes: total,
+    text: Buffer.concat(chunks).toString("utf8"),
+  };
 }
 
-function parseMessage(text) {
-  const trimmed = text.trim();
-  let payloadText = trimmed;
-  if (!trimmed.startsWith("{")) {
-    const events = trimmed
-      .split(/\r?\n\r?\n/u)
-      .flatMap((event) =>
-        event
-          .split(/\r?\n/u)
-          .filter((line) => line.startsWith("data:"))
-          .map((line) => line.slice(5).trim()),
-      );
-    if (events.length !== 1) {
-      throw new Error("MCP response must contain exactly one JSON/SSE data message");
-    }
-    payloadText = events[0];
+function parseSseMessages(text) {
+  const messages = [];
+  for (const event of text.split(/\r?\n\r?\n/u)) {
+    const data = event
+      .split(/\r?\n/u)
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).replace(/^ /u, ""))
+      .join("\n");
+    if (data.trim() === "") continue;
+    messages.push(JSON.parse(data));
   }
-  const message = JSON.parse(payloadText);
+  return messages;
+}
+
+function parseMessage(text, expectedId) {
+  const trimmed = text.trim();
+  const parsed =
+    trimmed.startsWith("{") || trimmed.startsWith("[")
+      ? JSON.parse(trimmed)
+      : parseSseMessages(trimmed);
+  const messages = Array.isArray(parsed) ? parsed : [parsed];
+  if (expectedId === undefined) {
+    const error = messages.find((message) => message?.error);
+    if (error) {
+      throw new Error(
+        `MCP JSON-RPC error ${error.error.code ?? "unknown"}: ${String(
+          error.error.message ?? "request failed",
+        ).slice(0, 240)}`,
+      );
+    }
+    return null;
+  }
+  const matching = messages.filter((message) => message?.id === expectedId);
+  if (matching.length !== 1) {
+    throw new Error(
+      `MCP response must contain exactly one JSON-RPC result for request ${expectedId}`,
+    );
+  }
+  const [message] = matching;
   if (message.error) {
     throw new Error(
       `MCP JSON-RPC error ${message.error.code ?? "unknown"}: ${String(
@@ -149,21 +199,44 @@ function toolResult(message) {
 }
 
 function apparentItemCount(result) {
-  if (Array.isArray(result)) return result.length;
-  if (!result || typeof result !== "object") return 1;
-  const arrays = ["results", "items", "hits", "entries", "documents"]
-    .map((key) => result[key])
-    .filter(Array.isArray);
-  return arrays.length === 0
-    ? 1
-    : Math.max(...arrays.map((entries) => entries.length));
+  let maximum = 1;
+  const visit = (value) => {
+    if (Array.isArray(value)) {
+      maximum = Math.max(maximum, value.length);
+      for (const entry of value) visit(entry);
+      return;
+    }
+    if (!value || typeof value !== "object") return;
+    for (const entry of Object.values(value)) visit(entry);
+  };
+  visit(result);
+  return maximum;
 }
 
 export function createStreamableMcpCaller({
   env = process.env,
   timeoutMs = 10_000,
   approvedTransport = null,
+  toolListOutputLimitBytes = 256 * 1024,
+  toolLimit = 256,
+  schemaLimitBytes = 64 * 1024,
 } = {}) {
+  if (
+    !Number.isSafeInteger(timeoutMs) ||
+    timeoutMs < 1 ||
+    timeoutMs > 60_000 ||
+    !Number.isSafeInteger(toolListOutputLimitBytes) ||
+    toolListOutputLimitBytes < 1_024 ||
+    toolListOutputLimitBytes > 256 * 1024 ||
+    !Number.isSafeInteger(toolLimit) ||
+    toolLimit < 1 ||
+    toolLimit > 256 ||
+    !Number.isSafeInteger(schemaLimitBytes) ||
+    schemaLimitBytes < 256 ||
+    schemaLimitBytes > 64 * 1024
+  ) {
+    throw new Error("Documentation MCP discovery bounds are invalid");
+  }
   const endpoint = configuredEndpoint(env);
   if (!endpoint) return null;
   const currentTransport = describeMcpTransport(env);
@@ -178,44 +251,132 @@ export function createStreamableMcpCaller({
   const auth = credential(env);
   let requestId = 0;
   let sessionId = null;
+  let negotiatedProtocolVersion = null;
   let initialized = false;
   let liveTools = null;
+  let discoveredTools = null;
 
-  const post = async (payload, outputLimitBytes = MAX_PROTOCOL_BYTES) => {
+  const post = async (
+    payload,
+    outputLimitBytes = MAX_PROTOCOL_BYTES,
+    transactionBudget = null,
+  ) => {
+    const requestTimeoutMs = transactionBudget
+      ? transactionBudget.deadlineMs - Date.now()
+      : timeoutMs;
+    if (requestTimeoutMs <= 0) {
+      throw new Error(
+        "Documentation MCP discovery exceeded the reviewed transaction timeout",
+      );
+    }
+    if (transactionBudget) {
+      if (transactionBudget.remainingRequests <= 0) {
+        throw new Error(
+          "Documentation MCP discovery exceeded the reviewed request limit",
+        );
+      }
+      transactionBudget.remainingRequests -= 1;
+    }
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const timer = setTimeout(() => controller.abort(), requestTimeoutMs);
     timer.unref?.();
+    const requestUsedSession = sessionId !== null;
     try {
-      const response = await fetch(endpoint, {
-        method: "POST",
-        redirect: "error",
-        signal: controller.signal,
-        headers: {
-          Accept: "application/json, text/event-stream",
-          "Content-Type": "application/json",
-          ...(auth.value ? { Authorization: `Bearer ${auth.value}` } : {}),
-          ...(sessionId ? { "Mcp-Session-Id": sessionId } : {}),
-        },
-        body: JSON.stringify(payload),
-      });
+      let response;
+      try {
+        response = await fetch(endpoint, {
+          method: "POST",
+          redirect: "error",
+          signal: controller.signal,
+          headers: {
+            Accept: "application/json, text/event-stream",
+            "Content-Type": "application/json",
+            ...(auth.value ? { Authorization: `Bearer ${auth.value}` } : {}),
+            ...(sessionId ? { "Mcp-Session-Id": sessionId } : {}),
+            ...(negotiatedProtocolVersion
+              ? { "MCP-Protocol-Version": negotiatedProtocolVersion }
+              : {}),
+          },
+          body: JSON.stringify(payload),
+        });
+      } catch (error) {
+        if (error?.name === "AbortError") {
+          error.mcpAvailability = "timeout";
+          throw error;
+        }
+        if (FETCH_TRANSPORT_ERROR_CODES.has(error?.cause?.code)) {
+          const transportError = new Error(
+            "Documentation MCP transport is unavailable",
+          );
+          transportError.mcpAvailability = "unavailable";
+          throw transportError;
+        }
+        throw error;
+      }
       if (!response.ok) {
-        throw new Error(`Documentation MCP returned HTTP ${response.status}`);
+        const error = new Error(
+          `Documentation MCP returned HTTP ${response.status}`,
+        );
+        error.mcpStatus = response.status;
+        error.requestUsedSession = requestUsedSession;
+        if (
+          response.status === 404 ||
+          response.status === 408 ||
+          response.status === 425 ||
+          response.status === 429 ||
+          response.status >= 500
+        ) {
+          error.mcpAvailability =
+            response.status === 408 ? "timeout" : "unavailable";
+        }
+        throw error;
       }
       const nextSession = response.headers.get("mcp-session-id");
-      if (nextSession) sessionId = nextSession;
-      const text = await boundedResponse(
-        response,
-        Math.min(MAX_PROTOCOL_BYTES, outputLimitBytes),
-      );
+      if (nextSession) {
+        if (
+          nextSession.length > 1024 ||
+          !/^[\x21-\x7e]+$/u.test(nextSession)
+        ) {
+          throw new Error(
+            "Documentation MCP returned an invalid session identifier",
+          );
+        }
+        sessionId = nextSession;
+      }
+      let bounded;
+      try {
+        bounded = await boundedResponse(
+          response,
+          Math.min(
+            MAX_PROTOCOL_BYTES,
+            outputLimitBytes,
+            transactionBudget?.remainingBytes ?? MAX_PROTOCOL_BYTES,
+          ),
+        );
+      } catch (error) {
+        if (error?.name === "AbortError") {
+          error.mcpAvailability = "timeout";
+        }
+        throw error;
+      }
+      if (transactionBudget) {
+        transactionBudget.remainingBytes -= bounded.bytes;
+      }
+      const { text } = bounded;
       return payload.id === undefined && text.trim() === ""
         ? null
-        : parseMessage(text);
+        : parseMessage(text, payload.id);
     } finally {
       clearTimeout(timer);
     }
   };
 
-  const request = (method, params, limit) =>
+  const request = (
+    method,
+    params,
+    limit,
+    transactionBudget = null,
+  ) =>
     post(
       {
         jsonrpc: "2.0",
@@ -224,40 +385,109 @@ export function createStreamableMcpCaller({
         params,
       },
       limit,
+      transactionBudget,
     );
 
-  const initialize = async () => {
-    if (initialized) return;
+  const initialize = async (transactionBudget = null) => {
+    if (initialized) {
+      if (transactionBudget) {
+        throw new Error(
+          "Documentation MCP discovery requires a fresh transport transaction",
+        );
+      }
+      return;
+    }
     const init = await request(
       "initialize",
       {
         protocolVersion: PROTOCOL_VERSION,
         capabilities: {},
-        clientInfo: { name: "qaas-docs-helper", version: "0.3.0" },
+        clientInfo: { name: "qaas-docs-helper", version: "0.4.0" },
       },
       64 * 1024,
+      transactionBudget,
     );
-    if (!sessionId) {
-      throw new Error("Documentation MCP did not provide a session ID");
-    }
     if (init.result?.protocolVersion !== PROTOCOL_VERSION) {
       throw new Error("Documentation MCP protocol version mismatch");
     }
-    await post({
-      jsonrpc: "2.0",
-      method: "notifications/initialized",
-    });
-    const listed = await request("tools/list", {}, 256 * 1024);
+    negotiatedProtocolVersion = init.result.protocolVersion;
+    await post(
+      {
+        jsonrpc: "2.0",
+        method: "notifications/initialized",
+      },
+      MAX_PROTOCOL_BYTES,
+      transactionBudget,
+    );
+    const listed = await request(
+      "tools/list",
+      {},
+      toolListOutputLimitBytes,
+      transactionBudget,
+    );
     if (!Array.isArray(listed.result?.tools)) {
       throw new Error("Documentation MCP tools/list response is malformed");
     }
+    if (
+      listed.result.nextCursor !== undefined &&
+      listed.result.nextCursor !== null
+    ) {
+      throw new Error(
+        "Documentation MCP tools/list pagination exceeds the single bounded discovery transaction",
+      );
+    }
+    if (listed.result.tools.length > toolLimit) {
+      throw new Error(
+        "Documentation MCP tools/list exceeds the reviewed tool limit",
+      );
+    }
+    const names = new Set();
+    discoveredTools = listed.result.tools.map((tool, index) => {
+      if (
+        !tool ||
+        typeof tool !== "object" ||
+        Array.isArray(tool) ||
+        typeof tool.name !== "string" ||
+        tool.name.length < 1 ||
+        tool.name.length > 128 ||
+        !/^[\x21-\x7e]+$/u.test(tool.name) ||
+        !tool.inputSchema ||
+        typeof tool.inputSchema !== "object" ||
+        Array.isArray(tool.inputSchema)
+      ) {
+        throw new Error(
+          `Documentation MCP tools/list entry ${index} is malformed`,
+        );
+      }
+      if (names.has(tool.name)) {
+        throw new Error(
+          `Documentation MCP tools/list duplicates tool ${tool.name}`,
+        );
+      }
+      names.add(tool.name);
+      const schemaBytes = Buffer.byteLength(
+        canonicalJson(tool.inputSchema),
+        "utf8",
+      );
+      if (schemaBytes > schemaLimitBytes) {
+        throw new Error(
+          `Documentation MCP input schema exceeds the reviewed byte limit for ${tool.name}`,
+        );
+      }
+      return {
+        name: tool.name,
+        inputSchema: tool.inputSchema,
+        schemaDigest: canonicalDigest(tool.inputSchema),
+        schemaBytes,
+      };
+    });
     liveTools = new Map(
       listed.result.tools.map((tool) => [tool.name, tool]),
     );
     initialized = true;
   };
 
-  return async (capability, input) => {
+  const callOnce = async (capability, input) => {
     await initialize();
     const live = liveTools.get(capability.tool);
     if (!live) {
@@ -291,4 +521,60 @@ export function createStreamableMcpCaller({
     }
     return result;
   };
+
+  const withSessionRecovery = async (operation) => {
+    try {
+      return await operation();
+    } catch (error) {
+      if (
+        error?.mcpStatus !== 404 ||
+        error?.requestUsedSession !== true
+      ) {
+        throw error;
+      }
+      sessionId = null;
+      negotiatedProtocolVersion = null;
+      initialized = false;
+      liveTools = null;
+      discoveredTools = null;
+      return operation();
+    }
+  };
+  const caller = (capability, input) =>
+    withSessionRecovery(() => callOnce(capability, input));
+  Object.defineProperty(caller, "discover", {
+    enumerable: false,
+    value: async () => {
+      const transactionBudget = {
+        deadlineMs: Date.now() + timeoutMs,
+        remainingBytes: toolListOutputLimitBytes,
+        remainingRequests: DOCS_MCP_PROBE_OPERATIONS.length,
+      };
+      await initialize(transactionBudget);
+      if (Date.now() > transactionBudget.deadlineMs) {
+        throw new Error(
+          "Documentation MCP discovery exceeded the reviewed transaction timeout",
+        );
+      }
+      if (transactionBudget.remainingRequests !== 0) {
+        throw new Error(
+          "Documentation MCP discovery did not complete the reviewed request sequence",
+        );
+      }
+      return {
+        protocolVersion: negotiatedProtocolVersion,
+        sessionMode: sessionId === null ? "stateless" : "stateful",
+        tools: discoveredTools.map((tool) => structuredClone(tool)),
+      };
+    },
+  });
+  return caller;
+}
+
+export async function discoverStreamableMcpTools(options = {}) {
+  const caller = createStreamableMcpCaller(options);
+  if (!caller) {
+    throw new Error("Documentation MCP discovery requires QAAS_DOCS_MCP_URL");
+  }
+  return caller.discover();
 }

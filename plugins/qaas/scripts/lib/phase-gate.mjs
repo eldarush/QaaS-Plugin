@@ -91,7 +91,7 @@ export function actionNeedsApproval(actionClass) {
 export function requiredFingerprintStage(actionClass, options = {}) {
   if (
     actionClass === "observability-query" &&
-    options.phase === "VERIFIED"
+    ["DIAGNOSING", "VERIFIED"].includes(options.phase)
   ) {
     return "onboardingFingerprint";
   }
@@ -147,7 +147,7 @@ export function evaluatePhaseGate({
   return {
     allowed: reasons.length === 0,
     reasons,
-    requiredFingerprint: requiredFingerprintStage(actionClass),
+    requiredFingerprint: requiredFingerprintStage(actionClass, { phase }),
   };
 }
 

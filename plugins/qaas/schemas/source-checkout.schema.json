@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/eldarush/QaaS-Plugin/schemas/source-checkout.schema.json",
+  "$id": "https://github.com/TheSmokeTeam/QaaS-Plugin/schemas/source-checkout.schema.json",
   "title": "QaaS bounded reference source checkout",
   "type": "object",
   "additionalProperties": false,
