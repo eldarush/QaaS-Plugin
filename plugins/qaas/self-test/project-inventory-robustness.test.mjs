@@ -323,9 +323,11 @@ describe("project inventory path safety", () => {
 
 describe("project inventory hard resource bounds", () => {
   test("never exceeds the 24 KiB pretty-JSON contract for long adversarial paths", async () => {
-    const root = await reusableFixture("long-adversarial-paths");
-    const first = "a".repeat(120);
-    const second = "b".repeat(120);
+    const root = await reusableFixture("long-adversarial-paths-win18");
+    // Keep the absolute hosted-runner path below legacy Windows/Node 18
+    // metadata limits while retaining enough long entries to force dropping.
+    const first = "a".repeat(64);
+    const second = "b".repeat(64);
     for (let index = 0; index < 80; index += 1) {
       await write(
         root,
