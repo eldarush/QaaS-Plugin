@@ -46,6 +46,7 @@ before(async () => {
   );
 
   Object.assign(files, Object.fromEntries(entries));
+  files.dockerfile = files.dockerfile.replace(/\r\n/gu, "\n");
 
   const catalogNames = (
     await readdir(path.join(distDirectory, "catalog"))

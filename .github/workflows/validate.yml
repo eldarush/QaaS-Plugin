@@ -199,4 +199,4 @@ jobs:
           done
           test "${healthy}" -eq 1
           docker exec "${container_id}" node -e \
-            "fetch('http://127.0.0.1:8080/').then(r=>r.text()).then(t=>{for(const v of ['https://github.com/TheSmokeTeam/QaaS-Plugin','https://qaas-docs.internal.example/','https://wikiall.internal.example/qaas/'])if(!t.includes(v))process.exit(1)})"
+            "fetch('http://127.0.0.1:8080/').then(r=>r.text()).then(t=>{for(const v of ['https://github.com/TheSmokeTeam/QaaS-Plugin','https://qaas-docs.internal.example','https://wikiall.internal.example/qaas'])if(!t.includes(v))process.exit(1)})"

@@ -1482,6 +1482,7 @@ export async function authorizeToolCall(event, context, authority, classificatio
     if (!Array.isArray(token.scope?.allowedPaths) || token.scope.allowedPaths.length === 0) {
       throw new Error(`${token.actionClass} token lacks exact allowedPaths`);
     }
+    const canonicalProjectRoot = await canonicalizeNearest(context.projectRoot);
     const allowed = new Set(
       token.scope.allowedPaths.map((entry) =>
         process.platform === "win32"
@@ -1491,7 +1492,7 @@ export async function authorizeToolCall(event, context, authority, classificatio
     );
     for (const target of classification.paths ?? []) {
       const relative = path
-        .relative(context.projectRoot, target.value)
+        .relative(canonicalProjectRoot, target.value)
         .replaceAll("\\", "/");
       const comparable =
         process.platform === "win32" ? relative.toLowerCase() : relative;

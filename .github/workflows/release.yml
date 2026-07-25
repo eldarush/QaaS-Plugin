@@ -158,8 +158,8 @@ jobs:
               .then((page) => {
                 for (const value of [
                   '${CANONICAL_SOURCE}',
-                  'https://qaas-docs.internal.example/',
-                  'https://wikiall.internal.example/qaas/',
+                  'https://qaas-docs.internal.example',
+                  'https://wikiall.internal.example/qaas',
                 ]) {
                   if (!page.includes(value)) throw new Error('Missing runtime value: ' + value);
                 }
