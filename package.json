@@ -1,0 +1,19 @@
+{
+  "name": "qaas-claude-code-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Validation and packaging tools for the Firefly QaaS Claude Code plugin.",
+  "type": "module",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "sync-version": "node tools/sync-version.mjs",
+    "check-version": "node tools/sync-version.mjs --check",
+    "audit": "node tools/audit-public.mjs",
+    "validate": "node tools/sync-version.mjs --check && node tools/audit-public.mjs && node plugins/qaas/scripts/validate-plugin.mjs && node plugins/qaas/scripts/check-context-budget.mjs",
+    "test": "node --test",
+    "package": "node tools/package-plugin.mjs",
+    "check": "npm run validate && npm test && npm run package"
+  }
+}

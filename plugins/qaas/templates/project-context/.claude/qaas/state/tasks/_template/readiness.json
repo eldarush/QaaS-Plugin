@@ -1,0 +1,220 @@
+{
+  "schemaVersion": "1.0",
+  "projectId": "<pending>",
+  "taskId": "<pending>",
+  "requiredSourcesEvidence": [
+    {
+      "kind": "project",
+      "identifier": "evidence:<pending-evidence-digest>",
+      "digest": "<pending-evidence-digest>",
+      "claimDigest": "<pending-claim-digest>"
+    }
+  ],
+  "finalRestatement": "Not yet established; replace with the complete evidence-bound restatement.",
+  "domains": {
+    "repository-boundary": {
+      "status": "unknown",
+      "summary": "Not yet established.",
+      "sources": [
+        {
+          "kind": "project",
+          "identifier": "evidence:<pending-evidence-digest>",
+          "digest": "<pending-evidence-digest>",
+          "claimDigest": "<pending-claim-digest>"
+        }
+      ]
+    },
+    "tested-system": {
+      "status": "unknown",
+      "summary": "Not yet established.",
+      "sources": [
+        {
+          "kind": "project",
+          "identifier": "evidence:<pending-evidence-digest>",
+          "digest": "<pending-evidence-digest>",
+          "claimDigest": "<pending-claim-digest>"
+        }
+      ]
+    },
+    "message-data-flows": {
+      "status": "unknown",
+      "summary": "Not yet established.",
+      "sources": [
+        {
+          "kind": "project",
+          "identifier": "evidence:<pending-evidence-digest>",
+          "digest": "<pending-evidence-digest>",
+          "claimDigest": "<pending-claim-digest>"
+        }
+      ]
+    },
+    "configuration-style": {
+      "status": "unknown",
+      "summary": "Not yet established.",
+      "sources": [
+        {
+          "kind": "project",
+          "identifier": "evidence:<pending-evidence-digest>",
+          "digest": "<pending-evidence-digest>",
+          "claimDigest": "<pending-claim-digest>"
+        }
+      ]
+    },
+    "qaas-configuration-semantics": {
+      "status": "unknown",
+      "summary": "Not yet established.",
+      "sources": [
+        {
+          "kind": "project",
+          "identifier": "evidence:<pending-evidence-digest>",
+          "digest": "<pending-evidence-digest>",
+          "claimDigest": "<pending-claim-digest>"
+        }
+      ]
+    },
+    "packages-and-docs": {
+      "status": "unknown",
+      "summary": "Not yet established.",
+      "sources": [
+        {
+          "kind": "project",
+          "identifier": "evidence:<pending-evidence-digest>",
+          "digest": "<pending-evidence-digest>",
+          "claimDigest": "<pending-claim-digest>"
+        }
+      ]
+    },
+    "relevant-files-and-custom-code": {
+      "status": "unknown",
+      "summary": "Not yet established.",
+      "sources": [
+        {
+          "kind": "project",
+          "identifier": "evidence:<pending-evidence-digest>",
+          "digest": "<pending-evidence-digest>",
+          "claimDigest": "<pending-claim-digest>"
+        }
+      ]
+    },
+    "commands": {
+      "status": "unknown",
+      "summary": "Not yet established.",
+      "sources": [
+        {
+          "kind": "project",
+          "identifier": "evidence:<pending-evidence-digest>",
+          "digest": "<pending-evidence-digest>",
+          "claimDigest": "<pending-claim-digest>"
+        }
+      ]
+    },
+    "existing-test-inventory": {
+      "status": "unknown",
+      "summary": "Not yet established.",
+      "sources": [
+        {
+          "kind": "project",
+          "identifier": "evidence:<pending-evidence-digest>",
+          "digest": "<pending-evidence-digest>",
+          "claimDigest": "<pending-claim-digest>"
+        }
+      ]
+    },
+    "contracts-and-oracle": {
+      "status": "unknown",
+      "summary": "Not yet established.",
+      "sources": [
+        {
+          "kind": "project",
+          "identifier": "evidence:<pending-evidence-digest>",
+          "digest": "<pending-evidence-digest>",
+          "claimDigest": "<pending-claim-digest>"
+        }
+      ]
+    },
+    "samples": {
+      "status": "unknown",
+      "summary": "Not yet established.",
+      "sources": [
+        {
+          "kind": "project",
+          "identifier": "evidence:<pending-evidence-digest>",
+          "digest": "<pending-evidence-digest>",
+          "claimDigest": "<pending-claim-digest>"
+        }
+      ]
+    },
+    "common-hooks-and-modules": {
+      "status": "unknown",
+      "summary": "Not yet established.",
+      "sources": [
+        {
+          "kind": "project",
+          "identifier": "evidence:<pending-evidence-digest>",
+          "digest": "<pending-evidence-digest>",
+          "claimDigest": "<pending-claim-digest>"
+        }
+      ]
+    },
+    "reference-projects": {
+      "status": "unknown",
+      "summary": "Not yet established.",
+      "sources": [
+        {
+          "kind": "project",
+          "identifier": "evidence:<pending-evidence-digest>",
+          "digest": "<pending-evidence-digest>",
+          "claimDigest": "<pending-claim-digest>"
+        }
+      ]
+    },
+    "environment-and-operations": {
+      "status": "unknown",
+      "summary": "Not yet established.",
+      "sources": [
+        {
+          "kind": "project",
+          "identifier": "evidence:<pending-evidence-digest>",
+          "digest": "<pending-evidence-digest>",
+          "claimDigest": "<pending-claim-digest>"
+        }
+      ]
+    },
+    "developer-inputs": {
+      "status": "unknown",
+      "summary": "Not yet established.",
+      "sources": [
+        {
+          "kind": "project",
+          "identifier": "evidence:<pending-evidence-digest>",
+          "digest": "<pending-evidence-digest>",
+          "claimDigest": "<pending-claim-digest>"
+        }
+      ]
+    },
+    "acceptance-criteria": {
+      "status": "unknown",
+      "summary": "Not yet established.",
+      "sources": [
+        {
+          "kind": "project",
+          "identifier": "evidence:<pending-evidence-digest>",
+          "digest": "<pending-evidence-digest>",
+          "claimDigest": "<pending-claim-digest>"
+        }
+      ]
+    },
+    "observability": {
+      "status": "unknown",
+      "summary": "Not yet established.",
+      "sources": [
+        {
+          "kind": "project",
+          "identifier": "evidence:<pending-evidence-digest>",
+          "digest": "<pending-evidence-digest>",
+          "claimDigest": "<pending-claim-digest>"
+        }
+      ]
+    }
+  }
+}

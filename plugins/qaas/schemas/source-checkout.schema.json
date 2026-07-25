@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/eldarush/QaaS-Plugin/schemas/source-checkout.schema.json",
+  "title": "QaaS bounded reference source checkout",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "checkoutId",
+    "createdAt",
+    "source",
+    "repositoryUrl",
+    "ref",
+    "commit",
+    "transport",
+    "credentialEnv",
+    "tlsVerify",
+    "tlsRiskAcknowledgement",
+    "digest"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.0" },
+    "checkoutId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._-]{1,80}$"
+    },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "source": {
+      "enum": ["modules", "common-hooks", "reference-project"]
+    },
+    "repositoryUrl": { "type": "string", "minLength": 1 },
+    "ref": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "commit": { "type": "string", "pattern": "^[a-f0-9]{40,64}$" },
+    "transport": { "enum": ["git", "glab"] },
+    "credentialEnv": {
+      "type": ["string", "null"],
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+    },
+    "tlsVerify": { "type": "boolean" },
+    "tlsRiskAcknowledgement": {
+      "type": ["string", "null"],
+      "minLength": 20,
+      "maxLength": 500
+    },
+    "digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+  }
+}

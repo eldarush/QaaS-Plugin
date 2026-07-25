@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/eldarush/QaaS-Plugin/schemas/readiness.schema.json",
+  "title": "QaaS evidence-bound readiness matrix",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "projectId",
+    "taskId",
+    "requiredSourcesEvidence",
+    "finalRestatement",
+    "domains"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.0" },
+    "projectId": { "type": "string", "minLength": 1 },
+    "taskId": { "type": ["string", "null"], "minLength": 1 },
+    "requiredSourcesEvidence": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "items": { "$ref": "#/$defs/nonUserSource" }
+    },
+    "finalRestatement": {
+      "type": "string",
+      "minLength": 20,
+      "maxLength": 1200
+    },
+    "domains": {
+      "type": "object",
+      "minProperties": 17,
+      "maxProperties": 17,
+      "required": [
+        "repository-boundary",
+        "tested-system",
+        "message-data-flows",
+        "configuration-style",
+        "qaas-configuration-semantics",
+        "packages-and-docs",
+        "relevant-files-and-custom-code",
+        "commands",
+        "existing-test-inventory",
+        "contracts-and-oracle",
+        "samples",
+        "common-hooks-and-modules",
+        "reference-projects",
+        "environment-and-operations",
+        "developer-inputs",
+        "acceptance-criteria",
+        "observability"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "repository-boundary": { "$ref": "#/$defs/domain" },
+        "tested-system": { "$ref": "#/$defs/domain" },
+        "message-data-flows": { "$ref": "#/$defs/domain" },
+        "configuration-style": { "$ref": "#/$defs/domain" },
+        "qaas-configuration-semantics": { "$ref": "#/$defs/domain" },
+        "packages-and-docs": { "$ref": "#/$defs/domain" },
+        "relevant-files-and-custom-code": { "$ref": "#/$defs/domain" },
+        "commands": { "$ref": "#/$defs/domain" },
+        "existing-test-inventory": { "$ref": "#/$defs/domain" },
+        "contracts-and-oracle": { "$ref": "#/$defs/domain" },
+        "samples": { "$ref": "#/$defs/domain" },
+        "common-hooks-and-modules": { "$ref": "#/$defs/domain" },
+        "reference-projects": { "$ref": "#/$defs/domain" },
+        "environment-and-operations": { "$ref": "#/$defs/domain" },
+        "developer-inputs": { "$ref": "#/$defs/domain" },
+        "acceptance-criteria": { "$ref": "#/$defs/domain" },
+        "observability": { "$ref": "#/$defs/domain" }
+      }
+    }
+  },
+  "$defs": {
+    "domain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "summary", "sources"],
+      "properties": {
+        "status": {
+          "enum": ["evidenced", "user_confirmed", "not_applicable", "unknown", "contradicted"]
+        },
+        "summary": { "type": "string", "minLength": 1, "maxLength": 320 },
+        "sources": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": { "$ref": "#/$defs/source" }
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "identifier", "digest", "claimDigest"],
+      "properties": {
+        "kind": { "enum": ["docs", "user", "project", "runtime", "package"] },
+        "identifier": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "claimDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+      }
+    },
+    "nonUserSource": {
+      "allOf": [
+        { "$ref": "#/$defs/source" },
+        {
+          "properties": {
+            "kind": { "enum": ["docs", "project", "runtime", "package"] }
+          }
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "schemaVersion": "1.0",
+  "status": "template-only",
+  "note": "This placeholder is intentionally invalid for approval or execution until a complete execution plan is authored from current static-verification evidence and validated. A valid execution plan always keeps observabilityQueries empty; external reads use a separate query plan."
+}

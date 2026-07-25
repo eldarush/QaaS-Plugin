@@ -1,0 +1,406 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/eldarush/QaaS-Plugin/schemas/execution-plan.schema.json",
+  "title": "QaaS execution plan",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "executionId",
+    "taskId",
+    "createdAt",
+    "implementationPlanDigest",
+    "staticVerificationDigest",
+    "environment",
+    "command",
+    "scope",
+    "sampleCount",
+    "stressRequested",
+    "expectedSideEffects",
+    "observabilityQueries",
+    "outputPaths",
+    "successChecks",
+    "warningPolicy",
+    "repeatCount",
+    "retryBudget",
+    "retryPassPolicy",
+    "wallClockLimitMs",
+    "userReviewedBudget",
+    "outputLimitBytes",
+    "noDeletionCleanup",
+    "digest"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.0" },
+    "executionId": { "type": "string", "minLength": 1 },
+    "taskId": { "type": "string", "minLength": 1 },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "implementationPlanDigest": { "$ref": "#/$defs/digest" },
+    "staticVerificationDigest": { "$ref": "#/$defs/digest" },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "description", "deploymentReadyConfirmed"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "description": { "type": "string", "minLength": 1 },
+        "deploymentReadyConfirmed": { "const": true }
+      }
+    },
+    "command": { "$ref": "#/$defs/command" },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "selectionMode",
+        "statement",
+        "executables",
+        "cases",
+        "sessions",
+        "configuration",
+        "configurationArgIndex",
+        "argumentBindings"
+      ],
+      "properties": {
+        "selectionMode": {
+          "enum": ["explicit", "all", "project-default"]
+        },
+        "statement": { "type": "string", "minLength": 1 },
+        "executables": { "$ref": "#/$defs/stringList" },
+        "cases": { "$ref": "#/$defs/stringList" },
+        "sessions": { "$ref": "#/$defs/stringList" },
+        "configuration": { "type": "string", "minLength": 1 },
+        "configurationArgIndex": { "type": "integer", "minimum": 0 },
+        "argumentBindings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "value", "argIndex"],
+            "properties": {
+              "kind": {
+                "enum": ["executable", "case", "session", "configuration"]
+              },
+              "value": { "type": "string", "minLength": 1 },
+              "argIndex": { "type": "integer", "minimum": 0 }
+            }
+          }
+        }
+      }
+    },
+    "sampleCount": { "type": "integer", "minimum": 0 },
+    "stressRequested": { "type": "boolean" },
+    "stress": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rate",
+        "durationMs",
+        "durationEvidence",
+        "timeoutMs",
+        "timeoutEvidence"
+      ],
+      "properties": {
+        "rate": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["value", "unit", "evidence"],
+          "properties": {
+            "value": { "type": "number", "exclusiveMinimum": 0 },
+            "unit": { "type": "string", "minLength": 1 },
+            "evidence": { "type": "string", "minLength": 1 }
+          }
+        },
+        "durationMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10800000
+        },
+        "durationEvidence": { "type": "string", "minLength": 1 },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10800000
+        },
+        "timeoutEvidence": { "type": "string", "minLength": 1 }
+      }
+    },
+    "expectedSideEffects": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "observabilityQueries": {
+      "type": "array",
+      "maxItems": 0,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "provider",
+          "capabilityId",
+          "relativeUrl",
+          "queryDigest",
+          "purpose",
+          "readOnly",
+          "timeoutMs",
+          "outputLimitBytes",
+          "itemLimit",
+          "checks"
+        ],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "provider": {
+            "enum": ["reportportal", "elastic", "thanos", "kubernetes"]
+          },
+          "capabilityId": { "type": "string", "minLength": 1 },
+          "relativeUrl": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048,
+            "pattern": "^(?![A-Za-z][A-Za-z0-9+.-]*:)(?!//).+$"
+          },
+          "queryDigest": { "$ref": "#/$defs/digest" },
+          "purpose": { "type": "string", "minLength": 1 },
+          "readOnly": { "const": true },
+          "timeoutMs": { "type": "integer", "minimum": 1, "maximum": 60000 },
+          "outputLimitBytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1048576
+          },
+          "itemLimit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10000
+          },
+          "checks": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 16,
+            "items": { "$ref": "#/$defs/observabilityCheck" }
+          }
+        }
+      }
+    },
+    "outputPaths": { "$ref": "#/$defs/pathList" },
+    "successChecks": { "$ref": "#/$defs/checkList" },
+    "warningPolicy": { "$ref": "#/$defs/warningPolicy" },
+    "repeatCount": { "type": "integer", "minimum": 1, "maximum": 3 },
+    "retryBudget": { "type": "integer", "minimum": 0, "maximum": 3 },
+    "retryPassPolicy": { "const": "reject-flaky" },
+    "wallClockLimitMs": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 10800000
+    },
+    "userReviewedBudget": { "const": true },
+    "outputLimitBytes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 10485760
+    },
+    "noDeletionCleanup": { "const": true },
+    "mutationPlanDigest": {
+      "type": ["string", "null"],
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "digest": { "$ref": "#/$defs/digest" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "stressRequested": { "const": true } } },
+      "then": { "required": ["stress"] },
+      "else": { "not": { "required": ["stress"] } }
+    }
+  ],
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "pathList": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^(?![A-Za-z]:[\\\\/])(?![\\\\/])(?!.*(?:^|[\\\\/])\\.\\.(?:[\\\\/]|$)).+$"
+      }
+    },
+    "stringList": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?![A-Za-z]:[\\\\/])(?![\\\\/])(?!.*(?:^|[\\\\/])\\.\\.(?:[\\\\/]|$)).+$"
+    },
+    "checkList": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/check" }
+    },
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "type": {
+          "enum": [
+            "stdout-contains",
+            "stderr-contains",
+            "file-exists",
+            "file-not-empty",
+            "file-sha256",
+            "text-file-contains",
+            "json-pointer-equals"
+          ]
+        },
+        "path": { "$ref": "#/$defs/relativePath" },
+        "contains": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "sha256": { "$ref": "#/$defs/digest" },
+        "jsonPointer": { "type": "string", "pattern": "^/" },
+        "expected": {},
+        "caseSensitive": { "type": "boolean" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "enum": [
+                  "file-exists",
+                  "file-not-empty",
+                  "file-sha256",
+                  "text-file-contains",
+                  "json-pointer-equals"
+                ]
+              }
+            }
+          },
+          "then": { "required": ["path"] }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "enum": [
+                  "stdout-contains",
+                  "stderr-contains",
+                  "text-file-contains"
+                ]
+              }
+            }
+          },
+          "then": { "required": ["contains"] }
+        },
+        {
+          "if": { "properties": { "type": { "const": "file-sha256" } } },
+          "then": { "required": ["sha256"] }
+        },
+        {
+          "if": {
+            "properties": { "type": { "const": "json-pointer-equals" } }
+          },
+          "then": { "required": ["jsonPointer", "expected"] }
+        }
+      ]
+    },
+    "warningPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "allowedSubstrings"],
+      "properties": {
+        "mode": { "enum": ["forbid", "allow-listed"] },
+        "allowedSubstrings": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 512 }
+        }
+      }
+    },
+    "observabilityCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "type": {
+          "enum": [
+            "status-equals",
+            "body-contains",
+            "json-pointer-equals"
+          ]
+        },
+        "expectedStatus": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 599
+        },
+        "contains": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "jsonPointer": { "type": "string", "pattern": "^/" },
+        "expected": {}
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "status-equals" } } },
+          "then": { "required": ["expectedStatus"] }
+        },
+        {
+          "if": { "properties": { "type": { "const": "body-contains" } } },
+          "then": { "required": ["contains"] }
+        },
+        {
+          "if": {
+            "properties": { "type": { "const": "json-pointer-equals" } }
+          },
+          "then": { "required": ["jsonPointer", "expected"] }
+        }
+      ]
+    },
+    "command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "program",
+        "args",
+        "cwd",
+        "envNames",
+        "shell",
+        "timeoutMs",
+        "outputLimitBytes"
+      ],
+      "properties": {
+        "program": { "type": "string", "minLength": 1 },
+        "args": { "type": "array", "items": { "type": "string" } },
+        "cwd": { "type": "string", "minLength": 1 },
+        "envNames": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          }
+        },
+        "shell": { "const": false },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10800000
+        },
+        "outputLimitBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10485760
+        },
+        "scriptDigest": {
+          "type": ["string", "null"],
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    }
+  }
+}

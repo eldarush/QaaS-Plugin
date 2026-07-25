@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/eldarush/QaaS-Plugin/schemas/approval-event.schema.json",
+  "title": "QaaS signed approval event payload",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "approvalId",
+    "projectId",
+    "kind",
+    "objectId",
+    "approvedDigest",
+    "sessionId",
+    "challengeId",
+    "questionId",
+    "source",
+    "decision",
+    "timestamp",
+    "sequence",
+    "leaseId",
+    "pluginVersion"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.0" },
+    "approvalId": { "type": "string", "minLength": 1 },
+    "projectId": { "type": "string", "minLength": 1 },
+    "kind": {
+      "enum": [
+        "context",
+        "plan",
+        "execution",
+        "mutation",
+        "capabilities",
+        "source-checkout",
+        "readiness-fact",
+        "query",
+        "lease-takeover"
+      ]
+    },
+    "objectId": { "type": "string", "minLength": 1 },
+    "approvedDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "sessionId": { "type": "string", "minLength": 1 },
+    "challengeId": { "type": "string", "minLength": 1 },
+    "questionId": { "type": "string", "minLength": 1 },
+    "source": { "enum": ["AskUserQuestion", "direct-command-helper"] },
+    "decision": { "const": "Approve" },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "sequence": { "type": "integer", "minimum": 0 }
+    ,
+    "leaseId": { "type": "string", "minLength": 1 },
+    "pluginVersion": { "type": "string", "minLength": 1 }
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "name": "qaas-plugin",
+  "owner": {
+    "name": "Firefly"
+  },
+  "metadata": {
+    "description": "A safety-gated Claude Code workflow for authoring and verifying QaaS test projects.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "qaas",
+      "source": "./plugins/qaas",
+      "description": "Onboard, plan, implement, run, and diagnose QaaS tests with documentation-backed, project-specific context.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Firefly"
+      },
+      "homepage": "https://github.com/eldarush/QaaS-Plugin",
+      "repository": "https://github.com/eldarush/QaaS-Plugin",
+      "keywords": [
+        "qaas",
+        "qa",
+        "testing",
+        "claude-code",
+        "air-gapped"
+      ],
+      "category": "development"
+    }
+  ]
+}

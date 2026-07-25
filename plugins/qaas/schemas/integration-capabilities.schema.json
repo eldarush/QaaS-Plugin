@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/eldarush/QaaS-Plugin/schemas/integration-capabilities.schema.json",
+  "title": "QaaS approved integration capability registry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "approvedAt", "capabilities"],
+  "properties": {
+    "version": { "type": "string", "minLength": 1 },
+    "approvedAt": { "type": "string", "format": "date-time" },
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "logicalOperation",
+          "server",
+          "tool",
+          "classification",
+          "inputSchema",
+          "schemaDigest",
+          "safeArgumentTemplate",
+          "outputLimitBytes",
+          "outputLimitItems",
+          "probePassed",
+          "userApproved"
+        ],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "logicalOperation": { "type": "string", "minLength": 1 },
+          "server": { "type": "string", "minLength": 1 },
+          "tool": { "type": "string", "minLength": 1 },
+          "classification": { "enum": ["read", "mutation"] },
+          "inputSchema": { "type": "object" },
+          "schemaDigest": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "safeArgumentTemplate": {},
+          "readOnlyQueryPolicy": {
+            "enum": [
+              "exact-template",
+              "http-get",
+              "sql-select",
+              "graphql-query"
+            ]
+          },
+          "outputLimitBytes": { "type": "integer", "minimum": 1 },
+          "outputLimitItems": { "type": "integer", "minimum": 1 },
+          "probePassed": { "type": "boolean" },
+          "userApproved": { "const": true }
+        }
+      }
+    }
+  }
+}

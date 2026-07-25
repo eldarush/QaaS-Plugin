@@ -1,0 +1,419 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/eldarush/QaaS-Plugin/schemas/task-plan.schema.json",
+  "title": "QaaS implementation plan",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "planId",
+    "taskId",
+    "createdAt",
+    "contextDigest",
+    "projectFingerprintDigest",
+    "packageSnapshotDigest",
+    "goal",
+    "acceptanceCriteria",
+    "paths",
+    "changes",
+    "dependencies",
+    "commands",
+    "generatedOutputs",
+    "expectedDiff",
+    "risks",
+    "acceptedResidualRisks",
+    "verification",
+    "warningPolicy",
+    "digest"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.0" },
+    "planId": { "type": "string", "minLength": 1 },
+    "taskId": { "type": "string", "minLength": 1 },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "contextDigest": { "$ref": "#/$defs/digest" },
+    "projectFingerprintDigest": { "$ref": "#/$defs/digest" },
+    "packageSnapshotDigest": { "$ref": "#/$defs/digest" },
+    "goal": { "type": "string", "minLength": 1 },
+    "acceptanceCriteria": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "paths": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["create", "modify", "forbidden", "unchanged"],
+      "properties": {
+        "create": { "$ref": "#/$defs/pathList" },
+        "modify": { "$ref": "#/$defs/pathList" },
+        "forbidden": { "$ref": "#/$defs/pathList" },
+        "unchanged": { "$ref": "#/$defs/pathList" }
+      }
+    },
+    "changes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "operation", "intent"],
+        "properties": {
+          "path": { "$ref": "#/$defs/relativePath" },
+          "operation": { "enum": ["create", "modify"] },
+          "intent": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "dependencies": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "change", "source"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "change": { "type": "string", "minLength": 1 },
+          "source": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "commands": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["restore", "build", "template"],
+      "properties": {
+        "restore": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/command" }
+        },
+        "build": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/command" }
+        },
+        "template": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/command" }
+        }
+      }
+    },
+    "generatedOutputs": { "$ref": "#/$defs/pathList" },
+    "expectedDiff": { "type": "string", "minLength": 1 },
+    "risks": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "acceptedResidualRisks": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["restore", "build", "template"],
+      "properties": {
+        "restore": { "$ref": "#/$defs/optionalCheckList" },
+        "build": { "$ref": "#/$defs/checkList" },
+        "template": {
+          "allOf": [
+            { "$ref": "#/$defs/checkList" },
+            {
+              "contains": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "file-exists",
+                      "file-not-empty",
+                      "file-sha256",
+                      "text-file-contains",
+                      "json-pointer-equals"
+                    ]
+                  }
+                },
+                "required": ["type"]
+              }
+            }
+          ]
+        }
+      }
+    },
+    "warningPolicy": { "$ref": "#/$defs/warningPolicy" },
+    "csharpClosure": { "$ref": "#/$defs/csharpClosure" },
+    "digest": { "$ref": "#/$defs/digest" }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "paths": {
+            "type": "object",
+            "required": ["create", "modify"],
+            "anyOf": [
+              {
+                "properties": {
+                  "create": {
+                    "contains": { "$ref": "#/$defs/csharpPath" }
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "modify": {
+                    "contains": { "$ref": "#/$defs/csharpPath" }
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "required": ["paths"]
+      },
+      "then": { "required": ["csharpClosure"] }
+    }
+  ],
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?![A-Za-z]:[\\\\/])(?![\\\\/])(?!.*(?:^|[\\\\/])\\.\\.(?:[\\\\/]|$)).+$"
+    },
+    "pathList": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/relativePath" }
+    },
+    "csharpPath": {
+      "type": "string",
+      "pattern": "\\.(?:[Cc][Ss]|[Cc][Ss][Pp][Rr][Oo][Jj]|[Cc][Ss][Xx]|[Pp][Rr][Oo][Pp][Ss]|[Tt][Aa][Rr][Gg][Ee][Tt][Ss]|[Ss][Ll][Nn]|[Ss][Ll][Nn][Xx])$"
+    },
+    "meaningfulClosureText": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 4096,
+      "not": {
+        "anyOf": [
+          {
+            "pattern": "^\\s*(?:[Tt][Oo][Dd][Oo]|[Tt][Bb][Dd]|[Uu][Nn][Kk][Nn][Oo][Ww][Nn]|[Pp][Ee][Nn][Dd][Ii][Nn][Gg]|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][Ee][Rr]|[Nn]\\/?[Aa]|[Nn][Oo][Nn][Ee]|[Nn][Uu][Ll][Ll]|[Nn][Oo][Tt]\\s+[Aa][Pp][Pp][Ll][Ii][Cc][Aa][Bb][Ll][Ee]|[Nn][Oo][Tt]\\s+[Ss][Ee][Tt]|[Tt][Oo]\\s+[Bb][Ee]\\s+(?:[Dd][Ee][Tt][Ee][Rr][Mm][Ii][Nn][Ee][Dd]|[Cc][Oo][Nn][Ff][Ii][Rr][Mm][Ee][Dd])|[Ff][Ii][Ll][Ll](?:\\s+[Tt][Hh][Ii][Ss])?\\s+(?:[Ll][Aa][Tt][Ee][Rr]|[Ii][Nn])|\\?+)(?:\\s|$|[:_-])"
+          },
+          {
+            "pattern": "\\{\\{[^{}]+\\}\\}|<\\s*(?:[Tt][Oo][Dd][Oo]|[Tt][Bb][Dd]|[Uu][Nn][Kk][Nn][Oo][Ww][Nn]|[Pp][Ee][Nn][Dd][Ii][Nn][Gg]|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][Ee][Rr]|[Rr][Ee][Pp][Ll][Aa][Cc][Ee](?:-?[Mm][Ee])?|[Vv][Aa][Ll][Uu][Ee]|[Nn][Aa][Mm][Ee]|[Tt][Yy][Pp][Ee]|[Pp][Aa][Tt][Hh])(?:\\s+[^<>]*)?>|\\[(?:[Tt][Oo][Dd][Oo]|[Tt][Bb][Dd]|[Uu][Nn][Kk][Nn][Oo][Ww][Nn]|[Pp][Ee][Nn][Dd][Ii][Nn][Gg]|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][Ee][Rr])[^\\]]*\\]"
+          }
+        ]
+      }
+    },
+    "csharpClosureItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "facts",
+        "documentationEvidence",
+        "projectEvidence"
+      ],
+      "properties": {
+        "status": {
+          "enum": ["resolved", "evidence-proven-inapplicable"]
+        },
+        "facts": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/meaningfulClosureText" }
+        },
+        "documentationEvidence": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/meaningfulClosureText" }
+        },
+        "projectEvidence": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/meaningfulClosureText" }
+        }
+      }
+    },
+    "csharpClosure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bootstrapModeAndArguments",
+        "builderTypesAndSignatures",
+        "topology",
+        "hookBasesInterfacesAndDiscovery",
+        "configurationRecordAndBinding",
+        "providerPackages",
+        "yamlAndCsharpUse",
+        "restoreBuildTemplateCommands"
+      ],
+      "properties": {
+        "bootstrapModeAndArguments": {
+          "$ref": "#/$defs/csharpClosureItem"
+        },
+        "builderTypesAndSignatures": {
+          "$ref": "#/$defs/csharpClosureItem"
+        },
+        "topology": {
+          "$ref": "#/$defs/csharpClosureItem"
+        },
+        "hookBasesInterfacesAndDiscovery": {
+          "$ref": "#/$defs/csharpClosureItem"
+        },
+        "configurationRecordAndBinding": {
+          "$ref": "#/$defs/csharpClosureItem"
+        },
+        "providerPackages": {
+          "$ref": "#/$defs/csharpClosureItem"
+        },
+        "yamlAndCsharpUse": {
+          "$ref": "#/$defs/csharpClosureItem"
+        },
+        "restoreBuildTemplateCommands": {
+          "$ref": "#/$defs/csharpClosureItem"
+        }
+      }
+    },
+    "checkList": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/check" }
+    },
+    "optionalCheckList": {
+      "type": "array",
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/check" }
+    },
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "type": {
+          "enum": [
+            "stdout-contains",
+            "stderr-contains",
+            "file-exists",
+            "file-not-empty",
+            "file-sha256",
+            "text-file-contains",
+            "json-pointer-equals"
+          ]
+        },
+        "path": { "$ref": "#/$defs/relativePath" },
+        "contains": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "sha256": { "$ref": "#/$defs/digest" },
+        "jsonPointer": { "type": "string", "pattern": "^/" },
+        "expected": {},
+        "caseSensitive": { "type": "boolean" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "enum": [
+                  "file-exists",
+                  "file-not-empty",
+                  "file-sha256",
+                  "text-file-contains",
+                  "json-pointer-equals"
+                ]
+              }
+            }
+          },
+          "then": { "required": ["path"] }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "enum": [
+                  "stdout-contains",
+                  "stderr-contains",
+                  "text-file-contains"
+                ]
+              }
+            }
+          },
+          "then": { "required": ["contains"] }
+        },
+        {
+          "if": { "properties": { "type": { "const": "file-sha256" } } },
+          "then": { "required": ["sha256"] }
+        },
+        {
+          "if": {
+            "properties": { "type": { "const": "json-pointer-equals" } }
+          },
+          "then": { "required": ["jsonPointer", "expected"] }
+        }
+      ]
+    },
+    "warningPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "allowedSubstrings"],
+      "properties": {
+        "mode": { "enum": ["forbid", "allow-listed"] },
+        "allowedSubstrings": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 512 }
+        }
+      }
+    },
+    "command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "program",
+        "args",
+        "cwd",
+        "envNames",
+        "shell",
+        "timeoutMs",
+        "outputLimitBytes"
+      ],
+      "properties": {
+        "program": { "type": "string", "minLength": 1 },
+        "args": { "type": "array", "items": { "type": "string" } },
+        "cwd": { "type": "string", "minLength": 1 },
+        "envNames": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          }
+        },
+        "shell": { "const": false },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10800000
+        },
+        "outputLimitBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10485760
+        },
+        "scriptDigest": {
+          "type": ["string", "null"],
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    }
+  }
+}

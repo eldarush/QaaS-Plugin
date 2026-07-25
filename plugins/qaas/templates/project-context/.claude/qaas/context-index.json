@@ -1,0 +1,103 @@
+{
+  "schemaVersion": "1.0",
+  "projectId": "<pending>",
+  "generatedAt": null,
+  "topics": [
+    {
+      "path": "qaas/project.md",
+      "title": "Project",
+      "purpose": "Repository identity, purpose, boundary, ownership, and evidence.",
+      "sha256": null
+    },
+    {
+      "path": "qaas/structure.md",
+      "title": "Structure",
+      "purpose": "Relevant path inventory, user explanations, classifications, and unresolved paths.",
+      "sha256": null
+    },
+    {
+      "path": "qaas/tested-system.md",
+      "title": "Tested system",
+      "purpose": "Tested component boundary, version, flows, side effects, correlation, and oracle.",
+      "sha256": null
+    },
+    {
+      "path": "qaas/qaas-configuration.md",
+      "title": "QaaS configuration",
+      "purpose": "Project-evidenced configuration style, composition, packages, documentation, and rendered intent.",
+      "sha256": null
+    },
+    {
+      "path": "qaas/conventions.md",
+      "title": "Conventions",
+      "purpose": "Confirmed placement, naming, formatting, reuse, and documentation conventions.",
+      "sha256": null
+    },
+    {
+      "path": "qaas/commands.md",
+      "title": "Commands",
+      "purpose": "Exact evidenced command specifications, prerequisites, coverage, and generated outputs.",
+      "sha256": null
+    },
+    {
+      "path": "qaas/suites-and-cases.md",
+      "title": "Suites and cases",
+      "purpose": "Existing executable, suite, case, input, and oracle inventory.",
+      "sha256": null
+    },
+    {
+      "path": "qaas/samples.md",
+      "title": "Samples",
+      "purpose": "Formats, schemas, field meanings, correlation, mutation rules, and protected fields.",
+      "sha256": null
+    },
+    {
+      "path": "qaas/custom-hooks.md",
+      "title": "Custom hooks",
+      "purpose": "Documented external Type A hooks, configuration, use, and discovery evidence.",
+      "sha256": null
+    },
+    {
+      "path": "qaas/modules.md",
+      "title": "Modules",
+      "purpose": "Actual module sources, pinned identities, resolution, overrides, and provenance.",
+      "sha256": null
+    },
+    {
+      "path": "qaas/environments.md",
+      "title": "Environments",
+      "purpose": "Environment identity, deployment ownership, permitted operations, and constraints.",
+      "sha256": null
+    },
+    {
+      "path": "qaas/observability.md",
+      "title": "Observability",
+      "purpose": "Task-relevant non-secret evidence sources and explicit query constraints.",
+      "sha256": null
+    },
+    {
+      "path": "qaas/integrations.md",
+      "title": "Integrations",
+      "purpose": "Approved non-secret documentation, repository, package, and capability configuration.",
+      "sha256": null
+    },
+    {
+      "path": "qaas/decisions.md",
+      "title": "Decisions",
+      "purpose": "Evidence-backed decisions, alternatives, tradeoffs, and affected context.",
+      "sha256": null
+    },
+    {
+      "path": "qaas/unknowns.md",
+      "title": "Unknowns",
+      "purpose": "Open contradictions and retained resolution history.",
+      "sha256": null
+    }
+  ],
+  "managedClaudeBlock": {
+    "startMarker": "<!-- QAAS:START -->",
+    "endMarker": "<!-- QAAS:END -->",
+    "sha256": null
+  },
+  "contextDigest": null
+}

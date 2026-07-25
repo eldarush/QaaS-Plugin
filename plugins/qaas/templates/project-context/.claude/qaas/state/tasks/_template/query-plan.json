@@ -1,0 +1,5 @@
+{
+  "schemaVersion": "1.0",
+  "status": "template-only",
+  "note": "This placeholder is intentionally invalid for approval or access until a complete bounded read-only query plan is authored from the current execution evidence and fingerprint, validated, separately reviewed, and approved for one use."
+}

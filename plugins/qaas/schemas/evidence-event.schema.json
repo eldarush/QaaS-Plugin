@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/eldarush/QaaS-Plugin/schemas/evidence-event.schema.json",
+  "title": "QaaS sanitized evidence event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "projectId",
+    "taskId",
+    "type",
+    "actionClass",
+    "status",
+    "timestamp",
+    "tool",
+    "inputDigest",
+    "outputDigest",
+    "exitCode",
+    "paths",
+    "excerpt",
+    "details",
+    "digest"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.0" },
+    "projectId": { "type": "string", "minLength": 1 },
+    "taskId": { "type": ["string", "null"], "minLength": 1 },
+    "type": { "type": "string", "minLength": 1 },
+    "actionClass": { "type": ["string", "null"], "minLength": 1 },
+    "status": { "enum": ["success", "failure", "blocked", "stale"] },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "tool": { "type": ["string", "null"], "minLength": 1 },
+    "inputDigest": {
+      "type": ["string", "null"],
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "outputDigest": {
+      "type": ["string", "null"],
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "exitCode": { "type": ["integer", "null"] },
+    "paths": { "type": "array", "items": { "type": "string" } },
+    "excerpt": { "type": ["string", "null"], "maxLength": 4096 },
+    "details": { "type": "object" },
+    "digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+  }
+}
+

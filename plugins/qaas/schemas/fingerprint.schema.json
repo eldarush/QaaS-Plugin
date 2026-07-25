@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/eldarush/QaaS-Plugin/schemas/fingerprint.schema.json",
+  "title": "QaaS project fingerprint",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "stage",
+    "projectRoot",
+    "createdAt",
+    "entries",
+    "packageSnapshot",
+    "contextDigest",
+    "externalReferences",
+    "renderedTemplate",
+    "digest"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.0" },
+    "stage": {
+      "enum": [
+        "onboardingFingerprint",
+        "taskBaseline",
+        "expectedWorkingFingerprint",
+        "staticVerificationFingerprint"
+      ]
+    },
+    "projectRoot": { "type": "string", "minLength": 1 },
+    "createdAt": { "type": ["string", "null"], "format": "date-time" },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "size", "sha256"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "size": { "type": "integer", "minimum": 0 },
+          "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "linkTarget": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "scopePaths": {
+      "type": ["array", "null"],
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "exclusions": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "packageSnapshot": {},
+    "contextDigest": {
+      "type": ["string", "null"],
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "externalReferences": { "type": "array", "items": { "type": "object" } },
+    "renderedTemplate": {},
+    "digest": {
+      "type": ["string", "null"],
+      "pattern": "^[a-f0-9]{64}$"
+    }
+  }
+}

@@ -1,0 +1,242 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/eldarush/QaaS-Plugin/schemas/query-plan.schema.json",
+  "title": "QaaS bounded read-only observability query plan",
+  "description": "A separately reviewed, one-use, read-only observability transaction. It is not part of an execution plan.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "queryPlanId",
+    "taskId",
+    "createdAt",
+    "executionPlanDigest",
+    "currentFingerprintDigest",
+    "queries",
+    "digest"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.0" },
+    "queryPlanId": { "$ref": "#/$defs/identifier" },
+    "taskId": { "$ref": "#/$defs/identifier" },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "executionPlanDigest": { "$ref": "#/$defs/digest" },
+    "currentFingerprintDigest": { "$ref": "#/$defs/digest" },
+    "queries": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/query" }
+    },
+    "digest": {
+      "allOf": [
+        { "$ref": "#/$defs/digest" },
+        {
+          "description": "SHA-256 of the canonical complete document with this digest property omitted."
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "identifier": {
+      "type": "string",
+      "minLength": 1
+    },
+    "endpointSelector": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 81,
+      "description": "The exact non-secret configured endpoint selector identifier, such as QAAS_REPORTPORTAL_URL or project-artifact. It is never an endpoint value, host, path, or URL.",
+      "pattern": "^(?:project-artifact|[A-Z][A-Z0-9_]{1,80})$"
+    },
+    "query": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "queryId",
+        "provider",
+        "capabilityId",
+        "toolName",
+        "toolInput",
+        "toolInputDigest",
+        "endpointSelector",
+        "purpose",
+        "credentialEnvNames",
+        "timeoutMs",
+        "outputLimitBytes",
+        "itemLimit",
+        "readOnly",
+        "responseChecks",
+        "queryDigest"
+      ],
+      "properties": {
+        "queryId": { "$ref": "#/$defs/identifier" },
+        "provider": {
+          "enum": [
+            "allure",
+            "reportportal",
+            "elastic",
+            "thanos",
+            "kubernetes",
+            "database"
+          ]
+        },
+        "capabilityId": {
+          "allOf": [
+            { "$ref": "#/$defs/identifier" },
+            {
+              "description": "The exact identifier of a current, successfully probed, read-only capability-registry entry."
+            }
+          ]
+        },
+        "toolName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "pattern": "^[A-Za-z0-9_.:-]+$",
+          "description": "The exact tool name recorded by the current capability entry as the reviewed permission contract. It is never invoked directly; a fixed internal read adapter performs the transaction."
+        },
+        "toolInput": {
+          "allOf": [
+            { "$ref": "#/$defs/toolInput" },
+            {
+              "description": "The exact reviewed JSON object. Runtime validation enforces maximum depth 8, at most 100 entries in each object/array, and a 16 KiB canonical UTF-8 byte limit."
+            }
+          ]
+        },
+        "toolInputDigest": {
+          "allOf": [
+            { "$ref": "#/$defs/digest" },
+            {
+              "description": "SHA-256 of the canonical exact toolInput object."
+            }
+          ]
+        },
+        "endpointSelector": { "$ref": "#/$defs/endpointSelector" },
+        "purpose": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "credentialEnvNames": {
+          "description": "Zero to four names of external credential environment variables. Credential values are never valid here or in toolInput.",
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^(?!(?:CLAUDE_|CODEX_|ANTHROPIC_))[A-Za-z_][A-Za-z0-9_]*$"
+          }
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 60000
+        },
+        "outputLimitBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1048576
+        },
+        "itemLimit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        },
+        "readOnly": { "const": true },
+        "responseChecks": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/responseCheck" }
+        },
+        "queryDigest": {
+          "allOf": [
+            { "$ref": "#/$defs/digest" },
+            {
+              "description": "SHA-256 of the canonical complete query object with this queryDigest property omitted."
+            }
+          ]
+        }
+      }
+    },
+    "toolInput": {
+      "type": "object",
+      "maxProperties": 100,
+      "additionalProperties": { "$ref": "#/$defs/safeInputValue" }
+    },
+    "safeInputValue": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "boolean" },
+        { "type": "number" },
+        { "type": "string" },
+        {
+          "type": "array",
+          "maxItems": 100,
+          "items": { "$ref": "#/$defs/safeInputValue" }
+        },
+        {
+          "type": "object",
+          "maxProperties": 100,
+          "additionalProperties": { "$ref": "#/$defs/safeInputValue" }
+        }
+      ]
+    },
+    "responseCheck": {
+      "oneOf": [
+        { "$ref": "#/$defs/statusEqualsCheck" },
+        { "$ref": "#/$defs/bodyContainsCheck" },
+        { "$ref": "#/$defs/jsonPointerEqualsCheck" }
+      ]
+    },
+    "statusEqualsCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type", "expectedStatus"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "type": { "const": "status-equals" },
+        "expectedStatus": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 599
+        }
+      }
+    },
+    "bodyContainsCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type", "contains"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "type": { "const": "body-contains" },
+        "contains": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "jsonPointerEqualsCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type", "jsonPointer", "expected"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "type": { "const": "json-pointer-equals" },
+        "jsonPointer": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "expected": {}
+      }
+    }
+  }
+}

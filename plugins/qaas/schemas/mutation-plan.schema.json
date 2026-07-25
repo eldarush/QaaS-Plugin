@@ -1,0 +1,207 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/eldarush/QaaS-Plugin/schemas/mutation-plan.schema.json",
+  "title": "QaaS non-deleting infrastructure mutation plan",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "mutationId",
+    "taskId",
+    "createdAt",
+    "executionPlanDigest",
+    "tool",
+    "resource",
+    "action",
+    "environment",
+    "expectedSideEffects",
+    "rollbackLimitation",
+    "successChecks",
+    "warningPolicy",
+    "noDeletion",
+    "digest"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.0" },
+    "mutationId": { "type": "string", "minLength": 1 },
+    "taskId": { "type": "string", "minLength": 1 },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "executionPlanDigest": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "name",
+        "inputDigest",
+        "command",
+        "outputDirectories"
+      ],
+      "properties": {
+        "kind": { "const": "process" },
+        "name": { "type": "string", "minLength": 1 },
+        "inputDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "command": { "$ref": "#/$defs/command" },
+        "outputDirectories": { "$ref": "#/$defs/pathList" }
+      }
+    },
+    "resource": { "type": "string", "minLength": 1 },
+    "action": {
+      "type": "string",
+      "minLength": 1,
+      "not": {
+        "pattern": "([Dd][Ee][Ll][Ee][Tt][Ee]|[Rr][Ee][Mm][Oo][Vv][Ee]|[Tt][Rr][Aa][Ss][Hh]|[Dd][Ee][Ss][Tt][Rr][Oo][Yy]|[Uu][Nn][Ii][Nn][Ss][Tt][Aa][Ll][Ll]|[Pp][Uu][Rr][Gg][Ee]|[Tt][Rr][Uu][Nn][Cc][Aa][Tt][Ee]|[Dd][Rr][Oo][Pp]|[Cc][Ll][Ee][Aa][Rr]|[Cc][Ll][Ee][Aa][Nn][Uu][Pp]|[Mm][Oo][Vv][Ee]|[Rr][Ee][Nn][Aa][Mm][Ee])"
+      }
+    },
+    "environment": { "type": "string", "minLength": 1 },
+    "expectedSideEffects": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "rollbackLimitation": { "type": "string", "minLength": 1 },
+    "successChecks": { "$ref": "#/$defs/checkList" },
+    "warningPolicy": { "$ref": "#/$defs/warningPolicy" },
+    "noDeletion": { "const": true },
+    "digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+  },
+  "$defs": {
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?![A-Za-z]:[\\\\/])(?![\\\\/])(?!.*(?:^|[\\\\/])\\.\\.(?:[\\\\/]|$)).+$"
+    },
+    "pathList": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/relativePath" }
+    },
+    "checkList": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/check" }
+    },
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "type": {
+          "enum": [
+            "stdout-contains",
+            "stderr-contains",
+            "file-exists",
+            "file-not-empty",
+            "file-sha256",
+            "text-file-contains",
+            "json-pointer-equals"
+          ]
+        },
+        "path": { "$ref": "#/$defs/relativePath" },
+        "contains": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "jsonPointer": { "type": "string", "pattern": "^/" },
+        "expected": {},
+        "caseSensitive": { "type": "boolean" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "enum": [
+                  "file-exists",
+                  "file-not-empty",
+                  "file-sha256",
+                  "text-file-contains",
+                  "json-pointer-equals"
+                ]
+              }
+            }
+          },
+          "then": { "required": ["path"] }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "enum": [
+                  "stdout-contains",
+                  "stderr-contains",
+                  "text-file-contains"
+                ]
+              }
+            }
+          },
+          "then": { "required": ["contains"] }
+        },
+        {
+          "if": { "properties": { "type": { "const": "file-sha256" } } },
+          "then": { "required": ["sha256"] }
+        },
+        {
+          "if": {
+            "properties": { "type": { "const": "json-pointer-equals" } }
+          },
+          "then": { "required": ["jsonPointer", "expected"] }
+        }
+      ]
+    },
+    "warningPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "allowedSubstrings"],
+      "properties": {
+        "mode": { "enum": ["forbid", "allow-listed"] },
+        "allowedSubstrings": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 512 }
+        }
+      }
+    },
+    "command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "program",
+        "args",
+        "cwd",
+        "envNames",
+        "shell",
+        "timeoutMs",
+        "outputLimitBytes"
+      ],
+      "properties": {
+        "program": { "type": "string", "minLength": 1 },
+        "args": { "type": "array", "items": { "type": "string" } },
+        "cwd": { "$ref": "#/$defs/relativePath" },
+        "envNames": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          }
+        },
+        "shell": { "const": false },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10800000
+        },
+        "outputLimitBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10485760
+        }
+      }
+    }
+  }
+}

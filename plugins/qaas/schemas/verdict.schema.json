@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/eldarush/QaaS-Plugin/schemas/verdict.schema.json",
+  "title": "QaaS task verdict",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "taskId",
+    "status",
+    "staticValidation",
+    "runtimeValidation",
+    "evidenceDigests",
+    "failedAttempts",
+    "limitations",
+    "timestamp",
+    "digest"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.0" },
+    "taskId": { "type": "string", "minLength": 1 },
+    "status": { "enum": ["verified", "not-run", "failed", "blocked"] },
+    "staticValidation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["performed", "passed", "summary"],
+      "properties": {
+        "performed": { "type": "boolean" },
+        "passed": { "type": ["boolean", "null"] },
+        "summary": { "type": "string", "minLength": 1 }
+      }
+    },
+    "runtimeValidation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["performed", "passed", "summary"],
+      "properties": {
+        "performed": { "type": "boolean" },
+        "passed": { "type": ["boolean", "null"] },
+        "summary": { "type": "string", "minLength": 1 }
+      }
+    },
+    "evidenceDigests": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+    },
+    "failedAttempts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["summary", "evidenceDigest"],
+        "properties": {
+          "summary": { "type": "string", "minLength": 1 },
+          "evidenceDigest": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        }
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+  }
+}
+
