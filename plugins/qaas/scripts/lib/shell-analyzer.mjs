@@ -373,6 +373,7 @@ function classifyVector(program, args) {
 
 export function analyzeProcessVector(program, args = []) {
   const rendered = [program, ...args].map((entry) => String(entry)).join(" ");
+  const vectorTokens = [program, ...args].map((entry) => String(entry));
   const actionClass = classifyVector(program, args);
   const destructiveReasons = DESTRUCTIVE_RULES.filter(
     ([reason, pattern]) =>
@@ -382,9 +383,14 @@ export function analyzeProcessVector(program, args = []) {
         actionClass !== "unknown"
       ) && pattern.test(rendered),
   ).map(([reason]) => reason);
-  const opaqueReasons = OPAQUE_RULES.filter(([, pattern]) =>
-    pattern.test(rendered),
-  ).map(([reason]) => reason);
+  const opaqueReasons = OPAQUE_RULES.filter(([reason, pattern]) => {
+    if (reason !== "glob-or-home-expansion") return pattern.test(rendered);
+    return vectorTokens.some(
+      (token) =>
+        /[*?[\]]/u.test(token) ||
+        /^~[^/\\]*(?:[/\\]|$)/u.test(token),
+    );
+  }).map(([reason]) => reason);
   const secrets = secretFindings(rendered);
   const executable = executableName(program);
   if (actionClass === "unknown") {

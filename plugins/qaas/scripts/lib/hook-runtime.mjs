@@ -623,6 +623,13 @@ export async function classifyToolCall(event, context, authority = null) {
   const input = event.tool_input;
   const serialized = JSON.stringify(input);
   await assertSessionHandleIsScoped(event, authority, serialized);
+  let registeredQuestion = null;
+  if (toolName === "AskUserQuestion") {
+    registeredQuestion = await classifyAskUserQuestion(event, authority);
+    if (registeredQuestion.approvalQuestion) {
+      return registeredQuestion;
+    }
+  }
   const comparableInput = serialized
     .replaceAll("\\\\", "/")
     .replaceAll("\\", "/")
@@ -872,7 +879,7 @@ export async function classifyToolCall(event, context, authority = null) {
     );
   }
   if (toolName === "AskUserQuestion") {
-    return classifyAskUserQuestion(event, authority);
+    return registeredQuestion;
   }
   if (SAFE_COORDINATOR_TOOLS.has(toolName)) {
     return { actionClass: "ordinary-read" };

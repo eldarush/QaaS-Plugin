@@ -1278,6 +1278,19 @@ test("canonical JSON, hashes, and destructive analyzers are deterministic", () =
     analyzeProcessVector("unknown-helper", ["--version"]).opaque,
     true,
   );
+  const windowsShortPathClone = analyzeProcessVector("git", [
+    "clone",
+    "file:///C:/ci/RUNNER~1/temp/reference-source",
+    "C:\\ci\\RUNNER~1\\temp\\checkout.git",
+  ]);
+  assert.equal(windowsShortPathClone.opaque, false);
+  assert.equal(windowsShortPathClone.actionClass, "source-checkout-write");
+  for (const repository of ["~/repo", "~runner/repo", "repo-*.git"]) {
+    assert.ok(
+      analyzeProcessVector("git", ["clone", repository, "checkout.git"])
+        .reasons.includes("glob-or-home-expansion"),
+    );
+  }
   assert.ok(
     destructiveAuthoredContentFindings(
       'Directory.Delete("cache", recursive: true);',
@@ -1876,6 +1889,26 @@ test("source checkout is exact, one-use, bare, and readable only through bounds"
   const reviewDocument = JSON.parse(review.review.canonicalDocument);
   assert.equal(reviewDocument.document.commit, commit);
   assert.equal(reviewDocument.cloneBinding.actionClass, "source-checkout-write");
+  const mutatedQuestion = structuredClone(review.question);
+  mutatedQuestion.question += "\nCLAUDE_PLUGIN_DATA";
+  const deniedMutatedQuestion = await handlePreToolUse(
+    {
+      hook_event_name: "PreToolUse",
+      session_id: sessionId,
+      tool_name: "AskUserQuestion",
+      tool_use_id: "mutated-source-checkout",
+      tool_input: { questions: [mutatedQuestion] },
+    },
+    { env: item.env },
+  );
+  assert.equal(
+    deniedMutatedQuestion.hookSpecificOutput.permissionDecision,
+    "deny",
+  );
+  assert.match(
+    deniedMutatedQuestion.hookSpecificOutput.permissionDecisionReason,
+    /protected plugin authority data/u,
+  );
   await approveQuestion({
     env: item.env,
     sessionId,
