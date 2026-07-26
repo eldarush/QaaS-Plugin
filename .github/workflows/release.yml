@@ -89,7 +89,10 @@ jobs:
           node tools/package-plugin.mjs
           second="$(sha256sum "${archive}" | cut -d ' ' -f 1)"
           test "${first}" = "${second}"
-          sha256sum --check "dist/qaas-plugin-${VERSION}.zip.sha256"
+          (
+            cd dist
+            sha256sum --check "qaas-plugin-${VERSION}.zip.sha256"
+          )
 
       - name: Upload verified plugin artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -136,7 +139,10 @@ jobs:
           VERSION: ${{ needs.build.outputs.version }}
         run: |
           set -euo pipefail
-          sha256sum --check "dist/qaas-plugin-${VERSION}.zip.sha256"
+          (
+            cd dist
+            sha256sum --check "qaas-plugin-${VERSION}.zip.sha256"
+          )
           expected_json="$(node tools/release-assets.mjs "${VERSION}" --json)"
 
           object_type="$(
