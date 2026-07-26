@@ -1,8 +1,0 @@
-{
-  "title": "QaaS Plugin",
-  "version": "0.4.0",
-  "description": "Safety-gated, documentation-backed QaaS test authoring for Claude Code.",
-  "repositoryUrl": "https://github.com/TheSmokeTeam/QaaS-Plugin",
-  "helmDocsUrl": "",
-  "wikiallDocsUrl": ""
-}

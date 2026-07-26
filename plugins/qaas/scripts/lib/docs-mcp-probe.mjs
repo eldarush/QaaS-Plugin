@@ -93,7 +93,7 @@ export function createDocsMcpProbeReview({
     typeof transport.endpoint !== "string"
   ) {
     throw new Error(
-      "Documentation MCP discovery requires QAAS_DOCS_MCP_URL",
+      "Documentation MCP discovery requires QAAS_DOCS_WIKIALL_URL",
     );
   }
   const review = {

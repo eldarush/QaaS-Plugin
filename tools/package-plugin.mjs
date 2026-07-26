@@ -16,7 +16,6 @@ const version = JSON.parse(
 const fixedFiles = [
   ".claude-plugin/marketplace.json",
   "README.md",
-  "CHANGELOG.md",
   "THIRD_PARTY_NOTICES.md",
   "version.json",
 ];
@@ -41,7 +40,6 @@ function collectFiles(directory, prefix) {
 
 const relativeFiles = [
   ...fixedFiles,
-  ...collectFiles(path.join(repositoryRoot, "docs"), "docs"),
   ...collectFiles(path.join(repositoryRoot, "plugins", "qaas"), "plugins/qaas"),
 ].sort((left, right) => left.localeCompare(right, "en"));
 

@@ -15,23 +15,15 @@ external read needs its own current one-use query-plan approval.
 
 | Priority | Source | Configuration selector | Exact approved non-secret identity |
 |---|---|---|---|
-| 1 | Proven WikiAll MCP `docs.search`/`docs.read` pair | `QAAS_DOCS_MCP_URL`; optional credential-name selector `QAAS_DOCS_MCP_CREDENTIAL_ENV` | {{WIKIALL_MCP_ENDPOINT_CAPABILITY_AND_SCHEMA_DIGESTS_OR_NOT_CONFIGURED}} |
+| 1 | Proven WikiAll MCP `docs.search`/`docs.read` pair | `QAAS_DOCS_WIKIALL_URL` | {{WIKIALL_MCP_ENDPOINT_CAPABILITY_AND_SCHEMA_DIGESTS_OR_NOT_CONFIGURED}} |
 | 2 | Helm/Kubernetes QaaS docs | `QAAS_DOCS_HELM_URL` | {{QAAS_DOCS_HELM_ENDPOINT_OR_NOT_CONFIGURED}} |
 | 3 | WikiAll HTTP docs | `QAAS_DOCS_WIKIALL_URL` | {{QAAS_DOCS_WIKIALL_ENDPOINT_OR_NOT_CONFIGURED}} |
-| 4 | Public distribution fallback | built in; disabled by `QAAS_DOCS_AIRGAP=true` | `https://docs.qaas.online/` or disabled |
-
-`QAAS_DOCS_ZIM_PATH` may record
-{{ZIM_PATH_AND_ARTIFACT_DIGEST_OR_NOT_CONFIGURED}} as an artifact identity. It
-is not readable by itself; the approved WikiAll/OpenZIM MCP above must expose
-the bounded search/read capability.
+| 4 | Public distribution fallback | built in | `https://docs.qaas.online/` |
 
 Record only endpoint identities, selector names, capability/schema digests,
-artifact digests, and probe results approved during onboarding. Never record a
-credential value. Startup, hooks, doctor, and general conversation contact none
-of these sources; only one explicit focused documentation query may read them.
-
-`QAAS_DOCS_PRIMARY_URL` and `QAAS_DOCS_SECONDARY_URL` are migration-only aliases
-for the Helm and WikiAll HTTP selectors. New context uses canonical names.
+and probe results approved during onboarding. Never record a credential value.
+Startup, hooks, doctor, and general conversation contact none of these sources;
+only one explicit focused documentation query may read them.
 
 ## Other project endpoints
 

@@ -23,86 +23,37 @@ const FETCH_TRANSPORT_ERROR_CODES = new Set([
 ]);
 
 function configuredEndpoint(env) {
-  const raw = env.QAAS_DOCS_MCP_URL;
+  const raw = env.QAAS_DOCS_WIKIALL_URL;
   if (!raw) return null;
   const endpoint = new URL(raw);
   if (!["http:", "https:"].includes(endpoint.protocol)) {
-    throw new Error("QAAS_DOCS_MCP_URL must use HTTP or HTTPS");
+    throw new Error("QAAS_DOCS_WIKIALL_URL must use HTTP or HTTPS");
   }
   if (endpoint.username || endpoint.password || endpoint.hash) {
-    throw new Error("QAAS_DOCS_MCP_URL may not contain credentials or fragments");
+    throw new Error(
+      "QAAS_DOCS_WIKIALL_URL may not contain credentials or fragments",
+    );
   }
   for (const [key, value] of endpoint.searchParams) {
     if (
       /(?:token|secret|password|auth|credential|api[-_]?key)/iu.test(key) ||
       secretFindings(value).length > 0
     ) {
-      throw new Error("QAAS_DOCS_MCP_URL may not contain credential query data");
+      throw new Error(
+        "QAAS_DOCS_WIKIALL_URL may not contain credential query data",
+      );
     }
   }
   return endpoint;
 }
 
-function credential(env) {
-  const name = env.QAAS_DOCS_MCP_CREDENTIAL_ENV;
-  if (!name) return { name: null, value: null };
-  if (
-    !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name) ||
-    /^(?:CLAUDE_|CODEX_|ANTHROPIC_)/u.test(name)
-  ) {
-    throw new Error(
-      "QAAS_DOCS_MCP_CREDENTIAL_ENV must name one user-selected environment variable",
-    );
-  }
-  const value = env[name];
-  if (!value) throw new Error(`Configured MCP credential variable ${name} is unset`);
-  if (
-    Buffer.byteLength(value, "utf8") > 8 * 1024 ||
-    !/^[\x21-\x7e]+$/u.test(value)
-  ) {
-    throw new Error(
-      `Configured MCP credential variable ${name} must contain at most 8 KiB of visible ASCII`,
-    );
-  }
-  return { name, value };
-}
-
-function explicitLoopback(hostname) {
-  return (
-    hostname === "127.0.0.1" ||
-    hostname === "[::1]" ||
-    /^127(?:\.\d{1,3}){3}$/u.test(hostname)
-  );
-}
-
 export function describeMcpTransport(env = process.env) {
   const endpoint = configuredEndpoint(env);
-  const credentialEnv = env.QAAS_DOCS_MCP_CREDENTIAL_ENV ?? null;
-  if (
-    credentialEnv !== null &&
-    (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(credentialEnv) ||
-      /^(?:CLAUDE_|CODEX_|ANTHROPIC_)/u.test(credentialEnv))
-  ) {
-    throw new Error(
-      "QAAS_DOCS_MCP_CREDENTIAL_ENV must name one user-selected environment variable",
-    );
-  }
-  if (
-    endpoint &&
-    credentialEnv &&
-    endpoint.protocol !== "https:" &&
-    !explicitLoopback(endpoint.hostname)
-  ) {
-    throw new Error(
-      "Documentation MCP bearer credentials require HTTPS or an explicit loopback endpoint",
-    );
-  }
   const description = {
     schemaVersion: "1.0",
     configured: Boolean(endpoint),
     endpoint: endpoint?.toString() ?? null,
     origin: endpoint?.origin ?? null,
-    credentialEnv,
   };
   description.digest = canonicalDigest(description);
   return description;
@@ -245,10 +196,9 @@ export function createStreamableMcpCaller({
     canonicalDigest(approvedTransport) !== canonicalDigest(currentTransport)
   ) {
     throw new Error(
-      "Documentation MCP endpoint/origin and credential selector lack exact signed approval",
+      "Documentation MCP endpoint and origin lack exact signed approval",
     );
   }
-  const auth = credential(env);
   let requestId = 0;
   let sessionId = null;
   let negotiatedProtocolVersion = null;
@@ -291,7 +241,6 @@ export function createStreamableMcpCaller({
           headers: {
             Accept: "application/json, text/event-stream",
             "Content-Type": "application/json",
-            ...(auth.value ? { Authorization: `Bearer ${auth.value}` } : {}),
             ...(sessionId ? { "Mcp-Session-Id": sessionId } : {}),
             ...(negotiatedProtocolVersion
               ? { "MCP-Protocol-Version": negotiatedProtocolVersion }
@@ -574,7 +523,9 @@ export function createStreamableMcpCaller({
 export async function discoverStreamableMcpTools(options = {}) {
   const caller = createStreamableMcpCaller(options);
   if (!caller) {
-    throw new Error("Documentation MCP discovery requires QAAS_DOCS_MCP_URL");
+    throw new Error(
+      "Documentation MCP discovery requires QAAS_DOCS_WIKIALL_URL",
+    );
   }
   return caller.discover();
 }

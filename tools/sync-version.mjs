@@ -21,16 +21,6 @@ const marketplacePath = path.join(
   "marketplace.json",
 );
 const packagePath = path.join(repositoryRoot, "package.json");
-const docsSitePackagePath = path.join(
-  repositoryRoot,
-  "docs-site",
-  "package.json",
-);
-const docsSiteConfigurationPath = path.join(
-  repositoryRoot,
-  "docs-site",
-  "site.config.json",
-);
 const runtimeVersionTargets = [
   {
     path: path.join(
@@ -93,37 +83,6 @@ const runtimeVersionTargets = [
       /clientInfo: \{ name: "qaas-docs-helper", version: "\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?" \},/u,
     replacement: () =>
       `clientInfo: { name: "qaas-docs-helper", version: "${desiredVersion}" },`,
-  },
-  {
-    path: path.join(repositoryRoot, "docs-site", "Dockerfile"),
-    pattern:
-      /org\.opencontainers\.image\.version="\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?"/u,
-    replacement: () =>
-      `org.opencontainers.image.version="${desiredVersion}"`,
-  },
-  {
-    path: path.join(
-      repositoryRoot,
-      "deploy",
-      "kubernetes",
-      "qaas-plugin-docs.yaml",
-    ),
-    pattern:
-      /app\.kubernetes\.io\/version: "\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?"/u,
-    replacement: () =>
-      `app.kubernetes.io/version: "${desiredVersion}"`,
-  },
-  {
-    path: path.join(
-      repositoryRoot,
-      "deploy",
-      "kubernetes",
-      "qaas-plugin-docs.yaml",
-    ),
-    pattern:
-      /image: docker\.io\/thesmoketeam\/qaas-plugin-docs:\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?/u,
-    replacement: () =>
-      `image: docker.io/thesmoketeam/qaas-plugin-docs:${desiredVersion}`,
   },
 ];
 const checkOnly = process.argv.includes("--check");
@@ -206,12 +165,6 @@ synchronize(marketplacePath, (marketplace) => {
 
 synchronize(packagePath, (packageDocument) => {
   packageDocument.version = desiredVersion;
-});
-synchronize(docsSitePackagePath, (packageDocument) => {
-  packageDocument.version = desiredVersion;
-});
-synchronize(docsSiteConfigurationPath, (configuration) => {
-  configuration.version = desiredVersion;
 });
 for (const target of runtimeVersionTargets) {
   synchronizeRuntimeVersion(target);

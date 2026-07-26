@@ -105,6 +105,15 @@ test("the immutable public docs fallback stays separate from reviewed Artifactor
     docsAttestation.wikiAll.effective.urlDigest,
     sha256("https://wikiall.example.test/qaas/"),
   );
+  assert.deepEqual(docsAttestation.configurationNames, [
+    "QAAS_DOCS_HELM_URL",
+    "QAAS_DOCS_WIKIALL_URL",
+  ]);
+  assert.equal(
+    docsAttestation.mcp.effective.urlDigest,
+    docsAttestation.wikiAll.effective.urlDigest,
+  );
+  assert.equal(sources.mcpUrl, sources.wikiAllUrl);
 
   const artifactoryAttestation =
     attestConfiguredSourceConfiguration({
@@ -126,73 +135,7 @@ test("the immutable public docs fallback stays separate from reviewed Artifactor
   );
 });
 
-test("explicit air-gap mode disables public documentation fallback", async () => {
-  const env = { QAAS_DOCS_AIRGAP: "true" };
-  const sources = resolveDocumentationSources({ env });
-  assert.equal(sources.airgap.enabled, true);
-  assert.equal(sources.builtInUrl, null);
-  assert.deepEqual(sources.httpSources, []);
-  assert.deepEqual(sources.resolutionOrder, [
-    "wikiall-mcp",
-    "helm-http",
-    "wikiall-http",
-  ]);
-
-  const attestation = await attestDocumentationSourceConfiguration(env);
-  assert.equal(attestation.airgap.enabled, true);
-  assert.equal(attestation.selectedSourceDigests["built-in-public"], null);
-  assert.deepEqual(attestation.resolutionOrder, sources.resolutionOrder);
-
-  assert.throws(
-    () =>
-      resolveDocumentationSources({
-        env: { QAAS_DOCS_AIRGAP: "sometimes" },
-      }),
-    /QAAS_DOCS_AIRGAP/u,
-  );
-});
-
-test("documentation selectors reject unsafe URLs and bind deprecated aliases", async () => {
-  const aliases = {
-    QAAS_DOCS_PRIMARY_URL: "https://helm-legacy.example.test/qaas/",
-    QAAS_DOCS_SECONDARY_URL: "https://wikiall-legacy.example.test/qaas/",
-  };
-  const sources = resolveDocumentationSources({ env: aliases });
-  assert.equal(
-    sources.helmUrl,
-    "https://helm-legacy.example.test/qaas/",
-  );
-  assert.equal(
-    sources.wikiAllUrl,
-    "https://wikiall-legacy.example.test/qaas/",
-  );
-  const attestation = await attestDocumentationSourceConfiguration(aliases);
-  assert.equal(attestation.helm.deprecatedAlias.selected, true);
-  assert.equal(attestation.wikiAll.deprecatedAlias.selected, true);
-  assert.equal(
-    attestation.selectedSourceDigests["helm-http"],
-    sha256(sources.helmUrl),
-  );
-  assert.equal(
-    resolveDocumentationSources({
-      env: {
-        QAAS_DOCS_HELM_URL: "https://same.example.test/qaas/",
-        QAAS_DOCS_PRIMARY_URL: "https://same.example.test/qaas/",
-      },
-    }).helmUrl,
-    "https://same.example.test/qaas/",
-  );
-
-  assert.throws(
-    () =>
-      resolveDocumentationSources({
-        env: {
-          QAAS_DOCS_HELM_URL: "https://canonical.example.test/qaas/",
-          QAAS_DOCS_PRIMARY_URL: "https://different.example.test/qaas/",
-        },
-      }),
-    /conflicts with deprecated/u,
-  );
+test("the two canonical documentation selectors reject unsafe URLs", async () => {
   for (const unsafe of [
     "not-a-url",
     "file:///approved/docs",
@@ -207,36 +150,14 @@ test("documentation selectors reject unsafe URLs and bind deprecated aliases", a
         }),
       /QAAS_DOCS_HELM_URL/u,
     );
+    assert.throws(
+      () =>
+        resolveDocumentationSources({
+          env: { QAAS_DOCS_WIKIALL_URL: unsafe },
+        }),
+      /QAAS_DOCS_WIKIALL_URL/u,
+    );
   }
-  assert.throws(
-    () =>
-      resolveDocumentationSources({
-        env: {
-          QAAS_DOCS_MCP_URL:
-            ["https://user", "password@wikiall.example.test/mcp"].join(":"),
-        },
-      }),
-    /QAAS_DOCS_MCP_URL/u,
-  );
-  assert.throws(
-    () =>
-      resolveDocumentationSources({
-        env: {
-          QAAS_DOCS_MCP_CREDENTIAL_ENV: "WIKIALL_DOCS_TOKEN",
-        },
-    }),
-    /requires QAAS_DOCS_MCP_URL/u,
-  );
-  assert.throws(
-    () =>
-      resolveDocumentationSources({
-        env: {
-          QAAS_DOCS_MCP_URL: "http://wikiall.example.test/mcp",
-          QAAS_DOCS_MCP_CREDENTIAL_ENV: "WIKIALL_DOCS_TOKEN",
-        },
-      }),
-    /require HTTPS or an explicit loopback/u,
-  );
 });
 
 test("project source reads use reviewed direct inputs without URL preconfiguration", async (t) => {
@@ -426,7 +347,6 @@ test("documentation reads remain explicit and capped at 16 KiB", async (t) => {
         mcp: null,
         primaryUrl: baseUrl,
         secondaryUrl: null,
-        zimPath: null,
       },
       outputLimitBytes: 64 * 1024,
     }),
@@ -532,13 +452,12 @@ test(
   },
 );
 
-test("public setup guidance advertises supported selectors and reviewed source inputs", async () => {
+test("plugin guidance advertises only the two documentation selectors", async () => {
   const relativeFiles = [
     "README.md",
-    "docs/airgap-configuration.md",
     "plugins/qaas/references/configuration/documentation-sources.md",
     "plugins/qaas/templates/project-context/.claude/qaas/integrations.md",
-    "plugins/qaas/skills/upgrade-qaas-project/SKILL.md",
+    "plugins/qaas/skills/query-qaas-docs/SKILL.md",
     "plugins/qaas/references/upgrades/version-proof.md",
   ];
   const documents = await Promise.all(
@@ -557,19 +476,16 @@ test("public setup guidance advertises supported selectors and reviewed source i
     );
   }
   const combined = documents.map((document) => document.text).join("\n");
-  for (const selector of [
+  const selectors = [
     "QAAS_DOCS_HELM_URL",
     "QAAS_DOCS_WIKIALL_URL",
-    "QAAS_DOCS_MCP_URL",
-    "QAAS_DOCS_MCP_CREDENTIAL_ENV",
-    "QAAS_DOCS_AIRGAP",
-    "QAAS_DOCS_ZIM_PATH",
-  ]) {
+  ];
+  for (const selector of selectors) {
     assert.match(combined, new RegExp(`\\b${selector}\\b`, "u"));
   }
-  assert.match(
-    combined,
-    /QAAS_DOCS_PRIMARY_URL[\s\S]{0,160}deprecated|deprecated[\s\S]{0,160}QAAS_DOCS_PRIMARY_URL/iu,
+  assert.deepEqual(
+    [...new Set(combined.match(/\bQAAS_DOCS_[A-Z0-9_]*_URL\b/gu))].sort(),
+    [...selectors].sort(),
   );
 
   const lines = documents.flatMap((document) =>

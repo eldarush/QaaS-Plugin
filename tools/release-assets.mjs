@@ -13,13 +13,6 @@ export function releaseAssetNames(version) {
     `qaas-plugin-${version}.zip`,
     `qaas-plugin-${version}.zip.sha256`,
     `qaas-plugin-${version}.zip.manifest.json`,
-    `qaas-plugin-docs-${version}-linux-amd64.tar.gz`,
-    `qaas-plugin-docs-${version}-linux-amd64.tar.gz.sha256`,
-    `qaas-plugin-docs-${version}-linux-amd64.tar.gz.metadata.json`,
-    `qaas-plugin-docs-kubernetes-${version}.yaml`,
-    `qaas-plugin-docs-kubernetes-airgap-${version}.yaml`,
-    `qaas-plugin-docs-${version}.registry-digest.txt`,
-    `qaas-plugin-${version}-release.sha256`,
   ]);
 }
 

@@ -16,7 +16,7 @@ Use only after `qaas-workflow` establishes the phase and the logical question.
    helper. It prefers one separately approved WikiAll MCP capability pair whose
    exact tools and schemas are backed by the current signed discovery-only
    probe, then the configured Helm/Kubernetes docs base, WikiAll HTTP
-   base, public distribution default, and reviewed local ZIM. Do not bypass it
+   base, and public distribution default. Do not bypass it
    with direct MCP, web, browser, shell, or corpus access.
    HTTP search results return a source-bound absolute candidate. Read one with
    both `--relative-url <candidate-url>` and `--source <candidate-source>`;

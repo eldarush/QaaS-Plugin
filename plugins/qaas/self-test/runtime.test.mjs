@@ -1983,9 +1983,10 @@ test("MCP discovery binds exact logical slots and falls back to Helm without gue
       },
     ],
   };
-  const approvedTransport = describeMcpTransport({
-    QAAS_DOCS_MCP_URL: "http://127.0.0.1:1/mcp",
-  });
+  const mcpEnvironment = {
+    QAAS_DOCS_WIKIALL_URL: "http://127.0.0.1:1/mcp",
+  };
+  const approvedTransport = describeMcpTransport(mcpEnvironment);
   const probeEvidence = {
     schemaVersion: "1.0",
     projectId: "resolver-test-project",
@@ -2024,7 +2025,7 @@ test("MCP discovery binds exact logical slots and falls back to Helm without gue
     errors: [],
   });
   let observed = null;
-  const resolvedSources = resolveRegistry({ QAAS_DOCS_PRIMARY_URL: "" });
+  const resolvedSources = resolveRegistry(mcpEnvironment);
   assert.equal(resolvedSources.mcp.search.server, "docs");
   assert.equal(resolvedSources.mcp.search.tool, "find");
   assert.equal(resolvedSources.mcp.read.tool, "read");
@@ -2053,6 +2054,7 @@ test("MCP discovery binds exact logical slots and falls back to Helm without gue
   const fallback = await resolveDocumentationQuery({
     query: "rate policy",
     sources: resolveRegistry({
+      ...mcpEnvironment,
       QAAS_DOCS_HELM_URL:
         `http://127.0.0.1:${server.address().port}/docs/`,
     }),
@@ -2206,7 +2208,6 @@ test("public documentation has a safe default and bounded URL search/failover", 
       mcp: null,
       primaryUrl: `http://127.0.0.1:${port}/bad/`,
       secondaryUrl: `http://127.0.0.1:${port}/docs/`,
-      zimPath: null,
     },
   });
   assert.equal(result.kind, "configured-url-search");
@@ -2227,7 +2228,6 @@ test("public documentation has a safe default and bounded URL search/failover", 
       mcp: null,
       primaryUrl: `http://127.0.0.1:${port}/bad/`,
       secondaryUrl: `http://127.0.0.1:${port}/docs/`,
-      zimPath: null,
     },
   });
   assert.equal(focusedResult.kind, "http-read");
@@ -2242,7 +2242,6 @@ test("public documentation has a safe default and bounded URL search/failover", 
         mcp: null,
         primaryUrl: `http://127.0.0.1:${port}/bad/`,
         secondaryUrl: `http://127.0.0.1:${port}/changed/`,
-        zimPath: null,
       },
     }),
     /escaped its configured (?:origin|base path)/u,
@@ -2253,7 +2252,6 @@ test("public documentation has a safe default and bounded URL search/failover", 
       mcp: null,
       primaryUrl: `http://127.0.0.1:${port}/bad/`,
       secondaryUrl: `http://127.0.0.1:${port}/wide/`,
-      zimPath: null,
     },
   });
   assert.equal(boundedCandidates.truncated, true);
@@ -2274,7 +2272,6 @@ test("public documentation has a safe default and bounded URL search/failover", 
         mcp: null,
         primaryUrl: `http://127.0.0.1:${port}/oversize/`,
         secondaryUrl: `http://127.0.0.1:${port}/docs/`,
-        zimPath: null,
       },
     }),
     /output bound/u,
@@ -2286,7 +2283,6 @@ test("public documentation has a safe default and bounded URL search/failover", 
         mcp: null,
         primaryUrl: `http://127.0.0.1:${port}/docs/`,
         secondaryUrl: null,
-        zimPath: null,
       },
       outputLimitBytes: Number.NaN,
     }),
@@ -2299,7 +2295,6 @@ test("public documentation has a safe default and bounded URL search/failover", 
         mcp: null,
         primaryUrl: `http://127.0.0.1:${port}/docs/`,
         secondaryUrl: null,
-        zimPath: null,
       },
       timeoutMs: 60_001,
     }),
@@ -2307,26 +2302,13 @@ test("public documentation has a safe default and bounded URL search/failover", 
   );
 });
 
-test("documentation provenance binds every resolver selector and local ZIM bytes", async () => {
+test("documentation provenance binds exactly the two canonical selectors", async () => {
   const item = await fixture("qaas-docs-identity-");
-  const firstZim = path.join(item.project, "current-docs.zim");
-  const secondZim = path.join(item.project, "alternate-docs.zim");
-  await writeFile(firstZim, "bounded documentation bytes", "utf8");
-  await writeFile(secondZim, "bounded documentation bytes", "utf8");
   const env = {
     QAAS_DOCS_HELM_URL: "https://helm.example.test/docs/",
     QAAS_DOCS_WIKIALL_URL: "https://wikiall.example.test/docs/",
-    QAAS_DOCS_ZIM_PATH: firstZim,
-    QAAS_DOCS_MCP_URL: "https://mcp.example.test/read/",
-    QAAS_DOCS_MCP_CREDENTIAL_ENV: "DOCS_READ_IDENTITY",
-    DOCS_READ_IDENTITY: "available",
-    DOCS_READ_IDENTITY_TWO: "available",
   };
   const expected = await attestDocumentationSourceConfiguration(env);
-  assert.equal(expected.zim.state, "file");
-  assert.equal(expected.zim.realPath, await realpath(firstZim));
-  assert.equal(expected.zim.size, Buffer.byteLength("bounded documentation bytes"));
-  assert.ok(expected.zim.sha256);
   assert.equal(
     expected.selectedSourceDigests["helm-http"],
     sha256(env.QAAS_DOCS_HELM_URL),
@@ -2337,19 +2319,16 @@ test("documentation provenance binds every resolver selector and local ZIM bytes
   );
   assert.equal(
     expected.selectedSourceDigests["wikiall-mcp"],
-    sha256(env.QAAS_DOCS_MCP_URL),
+    sha256(env.QAAS_DOCS_WIKIALL_URL),
   );
   assert.deepEqual(expected.configurationNames, [
     "QAAS_DOCS_HELM_URL",
     "QAAS_DOCS_WIKIALL_URL",
-    "QAAS_DOCS_MCP_URL",
-    "QAAS_DOCS_MCP_CREDENTIAL_ENV",
-    "QAAS_DOCS_AIRGAP",
-    "QAAS_DOCS_ZIM_PATH",
-    "QAAS_DOCS_PRIMARY_URL",
-    "QAAS_DOCS_SECONDARY_URL",
   ]);
-  assert.equal(expected.configurationNames.includes("QAAS_DOCS_URL"), false);
+  assert.equal(
+    expected.selectedSourceDigests["wikiall-mcp"],
+    expected.selectedSourceDigests["wikiall-http"],
+  );
   await assertCurrentDocumentationSourceConfiguration(expected, env);
   const helperEvent = {
     hook_event_name: "PreToolUse",
@@ -2382,8 +2361,9 @@ test("documentation provenance binds every resolver selector and local ZIM bytes
     expected.digest,
   );
   assert.equal(
-    helperClassification.sourceProvenance.documentationConfiguration.zim.sha256,
-    expected.zim.sha256,
+    helperClassification.sourceProvenance.documentationConfiguration.mcp
+      .effective.urlDigest,
+    expected.wikiAll.effective.urlDigest,
   );
 
   const selectorMutants = [
@@ -2396,32 +2376,14 @@ test("documentation provenance binds every resolver selector and local ZIM bytes
       QAAS_DOCS_WIKIALL_URL:
         "https://changed-wikiall.example.test/docs/",
     },
-    {
-      ...env,
-      QAAS_DOCS_MCP_URL: "https://changed-mcp.example.test/read/",
-    },
-    {
-      ...env,
-      QAAS_DOCS_MCP_CREDENTIAL_ENV: "DOCS_READ_IDENTITY_TWO",
-    },
-    {
-      ...env,
-      QAAS_DOCS_ZIM_PATH: secondZim,
-    },
   ];
   for (const mutant of selectorMutants) {
     await assert.rejects(
       assertCurrentDocumentationSourceConfiguration(expected, mutant),
-      /selector, endpoint, or local ZIM identity changed/u,
+      /selector or endpoint changed/u,
     );
   }
-  await writeFile(firstZim, "mutated documentation bytes", "utf8");
-  await assert.rejects(
-    assertCurrentDocumentationSourceConfiguration(expected, env),
-    /selector, endpoint, or local ZIM identity changed/u,
-  );
   const absent = await attestDocumentationSourceConfiguration({});
-  assert.equal(absent.zim.state, "absent");
   assert.equal(absent.helm.effective, null);
   assert.equal(absent.wikiAll.effective, null);
   assert.equal(
@@ -3016,7 +2978,7 @@ test("documentation MCP bootstrap is approved, discovery-only, one-use, and sche
   t.after(() => server.close());
 
   const item = await fixture("qaas-docs-mcp-probe-");
-  item.env.QAAS_DOCS_MCP_URL =
+  item.env.QAAS_DOCS_WIKIALL_URL =
     `http://127.0.0.1:${server.address().port}/mcp`;
   const sessionId = "docs-mcp-probe-session";
   const activated = await handleSessionEvent(
@@ -3265,7 +3227,7 @@ test("documentation MCP discovery does not retry a failed reviewed transaction",
   await once(server, "listening");
   t.after(() => server.close());
   const env = {
-    QAAS_DOCS_MCP_URL:
+    QAAS_DOCS_WIKIALL_URL:
       `http://127.0.0.1:${server.address().port}/mcp`,
   };
   await assert.rejects(
@@ -3341,7 +3303,7 @@ test("documentation MCP discovery applies aggregate reviewed byte and time bound
   await once(server, "listening");
   t.after(() => server.close());
   const origin = `http://127.0.0.1:${server.address().port}`;
-  const bytesEnv = { QAAS_DOCS_MCP_URL: `${origin}/bytes` };
+  const bytesEnv = { QAAS_DOCS_WIKIALL_URL: `${origin}/bytes` };
   await assert.rejects(
     discoverStreamableMcpTools({
       env: bytesEnv,
@@ -3350,7 +3312,7 @@ test("documentation MCP discovery applies aggregate reviewed byte and time bound
     }),
     /deterministic byte bound/u,
   );
-  const timeoutEnv = { QAAS_DOCS_MCP_URL: `${origin}/timeout` };
+  const timeoutEnv = { QAAS_DOCS_WIKIALL_URL: `${origin}/timeout` };
   await assert.rejects(
     discoverStreamableMcpTools({
       env: timeoutEnv,
@@ -3366,14 +3328,6 @@ test("documentation MCP discovery applies aggregate reviewed byte and time bound
 });
 
 test("bounded Streamable HTTP MCP uses the exact live signed tool schema", async (t) => {
-  assert.throws(
-    () =>
-      describeMcpTransport({
-        QAAS_DOCS_MCP_URL: "http://docs.example.test/mcp",
-        QAAS_DOCS_MCP_CREDENTIAL_ENV: "DOCS_TOKEN",
-      }),
-    /require HTTPS or an explicit loopback/u,
-  );
   const inputSchema = {
     type: "object",
     additionalProperties: false,
@@ -3432,10 +3386,7 @@ test("bounded Streamable HTTP MCP uses the exact live signed tool schema", async
         }),
       );
     } else {
-      assert.equal(
-        request.headers.authorization,
-        ["Bearer", "local-secret-value"].join(" "),
-      );
+      assert.equal(request.headers.authorization, undefined);
       const searchText = message.params?.arguments?.searchText;
       assert.equal(requestSession, activeSession);
       if (searchText === "recover" && expireRecoveryRequest) {
@@ -3480,21 +3431,9 @@ test("bounded Streamable HTTP MCP uses the exact live signed tool schema", async
   await once(server, "listening");
   t.after(() => server.close());
   const mcpEnv = {
-      QAAS_DOCS_MCP_URL: `http://127.0.0.1:${server.address().port}/mcp`,
-      QAAS_DOCS_MCP_CREDENTIAL_ENV: "OPENZIM_TEST_TOKEN",
-      OPENZIM_TEST_TOKEN: "local-secret-value",
+    QAAS_DOCS_WIKIALL_URL:
+      `http://127.0.0.1:${server.address().port}/mcp`,
   };
-  assert.throws(
-    () =>
-      createStreamableMcpCaller({
-        env: {
-          ...mcpEnv,
-          OPENZIM_TEST_TOKEN: "invalid\nheader",
-        },
-        approvedTransport: describeMcpTransport(mcpEnv),
-      }),
-    /visible ASCII/u,
-  );
   const caller = createStreamableMcpCaller({
     env: mcpEnv,
     approvedTransport: describeMcpTransport(mcpEnv),
@@ -3607,7 +3546,8 @@ test("Streamable HTTP MCP accepts stateless multi-event SSE responses", async (t
   await once(server, "listening");
   t.after(() => server.close());
   const env = {
-    QAAS_DOCS_MCP_URL: `http://127.0.0.1:${server.address().port}/mcp`,
+    QAAS_DOCS_WIKIALL_URL:
+      `http://127.0.0.1:${server.address().port}/mcp`,
   };
   const caller = createStreamableMcpCaller({
     env,

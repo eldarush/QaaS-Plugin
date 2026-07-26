@@ -423,9 +423,7 @@ export async function runDoctor({
     documentationSources: {
       builtIn: DEFAULT_QAAS_DOCS_URL,
       zeroSetup: true,
-      zeroSetupPublicFallback:
-        documentationConfiguration.valid &&
-        documentationConfiguration.attestation.airgap?.enabled !== true,
+      zeroSetupPublicFallback: documentationConfiguration.valid,
       resolutionOrder:
         documentationConfiguration.valid
           ? [...documentationConfiguration.attestation.resolutionOrder]

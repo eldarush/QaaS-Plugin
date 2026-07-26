@@ -9,11 +9,8 @@
     "check-version": "node tools/sync-version.mjs --check",
     "audit": "node tools/audit-public.mjs",
     "validate": "node tools/sync-version.mjs --check && node tools/audit-public.mjs && node plugins/qaas/scripts/validate-plugin.mjs && node plugins/qaas/scripts/check-context-budget.mjs",
-    "test": "npm run docs:build && node --test",
-    "docs:build": "npm --prefix docs-site run build",
-    "docs:test": "npm --prefix docs-site test",
-    "docs:check": "npm --prefix docs-site run check",
+    "test": "node --test",
     "package": "node tools/package-plugin.mjs",
-    "check": "npm run validate && npm test && npm run docs:check && npm run package"
+    "check": "npm run validate && npm test && npm run package"
   }
 }

@@ -1,6 +1,3 @@
-import { createHash } from "node:crypto";
-import { createReadStream } from "node:fs";
-import { lstat, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import {
   canonicalDigest,
@@ -28,12 +25,6 @@ export const DEFAULT_QAAS_DOCS_URL = BUILT_IN_QAAS_DOCS_URL;
 export const QAAS_DOCS_CONFIGURATION_NAMES = Object.freeze([
   "QAAS_DOCS_HELM_URL",
   "QAAS_DOCS_WIKIALL_URL",
-  "QAAS_DOCS_MCP_URL",
-  "QAAS_DOCS_MCP_CREDENTIAL_ENV",
-  "QAAS_DOCS_AIRGAP",
-  "QAAS_DOCS_ZIM_PATH",
-  "QAAS_DOCS_PRIMARY_URL",
-  "QAAS_DOCS_SECONDARY_URL",
 ]);
 export const QAAS_DOCS_RESOLUTION_ORDER = Object.freeze([
   "wikiall-mcp",
@@ -41,15 +32,6 @@ export const QAAS_DOCS_RESOLUTION_ORDER = Object.freeze([
   "wikiall-http",
   "built-in-public",
 ]);
-export const QAAS_DOCS_AIRGAP_RESOLUTION_ORDER = Object.freeze([
-  "wikiall-mcp",
-  "helm-http",
-  "wikiall-http",
-]);
-export const QAAS_DOCS_DEPRECATED_ALIASES = Object.freeze({
-  QAAS_DOCS_PRIMARY_URL: "QAAS_DOCS_HELM_URL",
-  QAAS_DOCS_SECONDARY_URL: "QAAS_DOCS_WIKIALL_URL",
-});
 
 function configuredUrl(name, value) {
   if (!value) return null;
@@ -86,40 +68,19 @@ function urlIdentity(url) {
   };
 }
 
-function configuredDocsUrl(name, alias, env) {
-  const configuredRaw = env[name];
-  const aliasRaw = env[alias];
-  const configured = configuredRaw
-    ? configuredUrl(name, configuredRaw)
-    : null;
-  const deprecated = aliasRaw
-    ? configuredUrl(alias, aliasRaw)
-    : null;
-  if (configured && deprecated && configured !== deprecated) {
-    throw new Error(
-      `${name} conflicts with deprecated ${alias}; keep only the canonical selector`,
-    );
-  }
-  return configured ?? deprecated;
+function configuredDocsUrl(name, env) {
+  return env[name] ? configuredUrl(name, env[name]) : null;
 }
 
-function configuredDocsUrlIdentity(name, alias, env) {
-  const selected = configuredDocsUrl(name, alias, env);
+function configuredDocsUrlIdentity(name, env) {
+  const selected = configuredDocsUrl(name, env);
   const selectorPresent = Object.hasOwn(env, name);
-  const aliasPresent = Object.hasOwn(env, alias);
   return {
     selector: name,
     selectorPresent,
     selectorValueDigest:
       selectorPresent ? sha256(String(env[name])) : null,
-    deprecatedAlias: {
-      selector: alias,
-      selectorPresent: aliasPresent,
-      selectorValueDigest:
-        aliasPresent ? sha256(String(env[alias])) : null,
-      selected: !env[name] && Boolean(env[alias]),
-    },
-    selectedBy: env[name] ? name : env[alias] ? alias : null,
+    selectedBy: env[name] ? name : null,
     effective: selected ? urlIdentity(selected) : null,
   };
 }
@@ -134,198 +95,31 @@ function builtInDocsIdentity() {
   };
 }
 
-function configuredAirgapIdentity(env) {
-  const selector = "QAAS_DOCS_AIRGAP";
-  const selectorPresent = Object.hasOwn(env, selector);
-  const raw = selectorPresent ? String(env[selector]).trim().toLowerCase() : "";
-  let enabled = false;
-  if (raw) {
-    if (["true", "1", "yes"].includes(raw)) enabled = true;
-    else if (!["false", "0", "no"].includes(raw)) {
-      throw new Error(
-        "QAAS_DOCS_AIRGAP must be true/false, 1/0, or yes/no",
-      );
-    }
-  }
-  return {
-    selector,
-    selectorPresent,
-    selectorValueDigest:
-      selectorPresent ? sha256(String(env[selector])) : null,
-    enabled,
-  };
-}
-
-function configuredMcpIdentity(env) {
-  const name = "QAAS_DOCS_MCP_URL";
-  const selectorPresent = Object.hasOwn(env, name);
-  const raw = env[name];
-  if (!raw) {
-    return {
-      selector: name,
-      selectorPresent,
-      selectorValueDigest:
-        selectorPresent ? sha256(String(raw)) : null,
-      effective: null,
-    };
-  }
-  const configured = configuredUrl(name, raw);
-  const url = new URL(configured);
-  if (url.hash) {
-    throw new Error("QAAS_DOCS_MCP_URL may not contain a fragment");
-  }
-  return {
-    selector: name,
-    selectorPresent,
-    selectorValueDigest: sha256(String(raw)),
-    effective: {
-      protocol: url.protocol,
-      origin: url.origin,
-      pathname: url.pathname,
-      queryParameterNames: [...url.searchParams.keys()].sort(),
-      urlDigest: sha256(url.toString()),
-    },
-  };
-}
-
-function configuredMcpCredentialSelector(env, mcpUrl) {
-  const selector = env.QAAS_DOCS_MCP_CREDENTIAL_ENV ?? null;
-  if (
-    selector !== null &&
-    (
-      typeof selector !== "string" ||
-      !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(selector) ||
-      /^(?:CLAUDE_|CODEX_|ANTHROPIC_)/u.test(selector)
-    )
-  ) {
-    throw new Error(
-      "QAAS_DOCS_MCP_CREDENTIAL_ENV must name one safe credential variable",
-    );
-  }
-  if (selector && !mcpUrl) {
-    throw new Error(
-      "QAAS_DOCS_MCP_CREDENTIAL_ENV requires QAAS_DOCS_MCP_URL",
-    );
-  }
-  if (selector && mcpUrl) {
-    const endpoint = new URL(mcpUrl);
-    const loopback =
-      endpoint.hostname === "127.0.0.1" ||
-      endpoint.hostname === "[::1]" ||
-      /^127(?:\.\d{1,3}){3}$/u.test(endpoint.hostname);
-    if (endpoint.protocol !== "https:" && !loopback) {
-      throw new Error(
-        "Documentation MCP bearer credentials require HTTPS or an explicit loopback endpoint",
-      );
-    }
-  }
-  return selector;
-}
-
-async function configuredZimIdentity(env) {
-  const name = "QAAS_DOCS_ZIM_PATH";
-  const selectorPresent = Object.hasOwn(env, name);
-  const raw = env[name];
-  if (!raw) {
-    return {
-      selector: name,
-      selectorPresent,
-      selectorValueDigest:
-        selectorPresent ? sha256(String(raw)) : null,
-      state: "absent",
-    };
-  }
-  const requestedPath = path.resolve(String(raw));
-  const lexicalInfo = await lstat(requestedPath);
-  if (lexicalInfo.isSymbolicLink()) {
-    throw new Error("QAAS_DOCS_ZIM_PATH may not be a symbolic link");
-  }
-  const canonicalPath = await realpath(requestedPath);
-  const info = await stat(canonicalPath, { bigint: true });
-  if (!info.isFile()) {
-    throw new Error("QAAS_DOCS_ZIM_PATH must identify one ordinary file");
-  }
-  const size = Number(info.size);
-  if (!Number.isSafeInteger(size)) {
-    throw new Error("QAAS_DOCS_ZIM_PATH size exceeds the safe identity bound");
-  }
-  return {
-    selector: name,
-    selectorPresent,
-    selectorValueDigest: sha256(String(raw)),
-    state: "file",
-    realPath: canonicalPath,
-    size,
-    sha256: await hashFileStreaming(canonicalPath),
-    fileFingerprint: {
-      device: String(info.dev),
-      inode: String(info.ino),
-      mode: Number(info.mode),
-      modifiedNanoseconds: String(info.mtimeNs),
-    },
-  };
-}
-
 export async function attestDocumentationSourceConfiguration(
   env = process.env,
 ) {
-  const airgap = configuredAirgapIdentity(env);
-  const mcp = configuredMcpIdentity(env);
-  const credentialSelector = configuredMcpCredentialSelector(
-    env,
-    env.QAAS_DOCS_MCP_URL
-      ? configuredUrl("QAAS_DOCS_MCP_URL", env.QAAS_DOCS_MCP_URL)
-      : null,
-  );
+  const helm = configuredDocsUrlIdentity("QAAS_DOCS_HELM_URL", env);
+  const wikiAll = configuredDocsUrlIdentity("QAAS_DOCS_WIKIALL_URL", env);
   const attestation = {
     schemaVersion: "1.0",
     configurationNames: [...QAAS_DOCS_CONFIGURATION_NAMES],
-    deprecatedAliases: { ...QAAS_DOCS_DEPRECATED_ALIASES },
-    resolutionOrder: [
-      ...(airgap.enabled
-        ? QAAS_DOCS_AIRGAP_RESOLUTION_ORDER
-        : QAAS_DOCS_RESOLUTION_ORDER),
-    ],
+    resolutionOrder: [...QAAS_DOCS_RESOLUTION_ORDER],
     builtInEndpoints: {
       docs: builtInEndpoint("docs"),
     },
     builtInEndpointDigests: {
       docs: canonicalDigest(builtInEndpoint("docs")),
     },
-    helm: configuredDocsUrlIdentity(
-      "QAAS_DOCS_HELM_URL",
-      "QAAS_DOCS_PRIMARY_URL",
-      env,
-    ),
-    wikiAll: configuredDocsUrlIdentity(
-      "QAAS_DOCS_WIKIALL_URL",
-      "QAAS_DOCS_SECONDARY_URL",
-      env,
-    ),
+    helm,
+    wikiAll,
     public: builtInDocsIdentity(),
-    airgap,
-    zim: await configuredZimIdentity(env),
-    mcp,
-    mcpCredential: {
-      selector: "QAAS_DOCS_MCP_CREDENTIAL_ENV",
-      selectorPresent: Object.hasOwn(
-        env,
-        "QAAS_DOCS_MCP_CREDENTIAL_ENV",
-      ),
-      selectedEnvironmentName: credentialSelector,
-      selectedValueAvailable:
-        credentialSelector === null
-          ? null
-          : Boolean(env[credentialSelector]),
-    },
+    mcp: structuredClone(wikiAll),
   };
   attestation.selectedSourceDigests = {
     "wikiall-mcp": attestation.mcp.effective?.urlDigest ?? null,
     "helm-http": attestation.helm.effective?.urlDigest ?? null,
     "wikiall-http": attestation.wikiAll.effective?.urlDigest ?? null,
-    "built-in-public": airgap.enabled
-      ? null
-      : attestation.public.effective.urlDigest,
+    "built-in-public": attestation.public.effective.urlDigest,
   };
   attestation.digest = canonicalDigest(attestation);
   return attestation;
@@ -344,7 +138,7 @@ export async function assertCurrentDocumentationSourceConfiguration(
   const current = await attestDocumentationSourceConfiguration(env);
   if (!safeEqualHex(current.digest, expected.digest)) {
     throw new Error(
-      "Documentation source selector, endpoint, or local ZIM identity changed",
+      "Documentation source selector or endpoint changed",
     );
   }
   return current;
@@ -356,7 +150,6 @@ export function resolveDocumentationSources({
   probeEvidence = null,
   approvedTransport = null,
 } = {}) {
-  const airgap = configuredAirgapIdentity(env);
   let mcp = null;
   if (capabilityRegistry) {
     const validation = validateCapabilityRegistry(capabilityRegistry);
@@ -410,27 +203,13 @@ export function resolveDocumentationSources({
       };
     }
   }
-  const mcpUrl = configuredUrl(
-    "QAAS_DOCS_MCP_URL",
-    env.QAAS_DOCS_MCP_URL,
-  );
-  configuredMcpCredentialSelector(env, mcpUrl);
-  const helmUrl = configuredDocsUrl(
-    "QAAS_DOCS_HELM_URL",
-    "QAAS_DOCS_PRIMARY_URL",
-    env,
-  );
-  const wikiAllUrl = configuredDocsUrl(
-    "QAAS_DOCS_WIKIALL_URL",
-    "QAAS_DOCS_SECONDARY_URL",
-    env,
-  );
+  const helmUrl = configuredDocsUrl("QAAS_DOCS_HELM_URL", env);
+  const wikiAllUrl = configuredDocsUrl("QAAS_DOCS_WIKIALL_URL", env);
+  const mcpUrl = wikiAllUrl;
   const orderedHttpSources = [
     { source: "helm-http", baseUrl: helmUrl },
     { source: "wikiall-http", baseUrl: wikiAllUrl },
-    ...(airgap.enabled
-      ? []
-      : [{ source: "built-in-public", baseUrl: DEFAULT_QAAS_DOCS_URL }]),
+    { source: "built-in-public", baseUrl: DEFAULT_QAAS_DOCS_URL },
   ].filter((entry) => entry.baseUrl);
   const seen = new Set();
   const httpSources = orderedHttpSources.filter((entry) => {
@@ -443,22 +222,14 @@ export function resolveDocumentationSources({
     builtInEndpoints: {
       docs: builtInEndpoint("docs"),
     },
-    resolutionOrder: [
-      ...(airgap.enabled
-        ? QAAS_DOCS_AIRGAP_RESOLUTION_ORDER
-        : QAAS_DOCS_RESOLUTION_ORDER),
-    ],
-    airgap,
+    resolutionOrder: [...QAAS_DOCS_RESOLUTION_ORDER],
     mcpUrl,
     helmUrl,
     wikiAllUrl,
-    builtInUrl: airgap.enabled ? null : DEFAULT_QAAS_DOCS_URL,
+    builtInUrl: DEFAULT_QAAS_DOCS_URL,
     httpSources,
     primaryUrl: httpSources[0]?.baseUrl ?? null,
     secondaryUrl: httpSources[1]?.baseUrl ?? null,
-    zimPath: env.QAAS_DOCS_ZIM_PATH
-      ? path.resolve(env.QAAS_DOCS_ZIM_PATH)
-      : null,
   };
 }
 
@@ -943,46 +714,6 @@ function documentationUrlWithinBase(candidateUrl, baseUrl) {
   );
 }
 
-async function hashFileStreaming(
-  target,
-  {
-    maxBytes = 256 * 1024 * 1024,
-    timeoutMs = 60_000,
-  } = {},
-) {
-  const info = await stat(target);
-  if (!info.isFile() || info.size > maxBytes) {
-    throw new Error(
-      "Offline documentation artifact exceeds the bounded hashing limit",
-    );
-  }
-  const hash = createHash("sha256");
-  await new Promise((resolve, reject) => {
-    const stream = createReadStream(target);
-    let total = 0;
-    const timer = setTimeout(() => {
-      stream.destroy(
-        new Error("Offline documentation artifact hashing timed out"),
-      );
-    }, timeoutMs);
-    timer.unref?.();
-    stream.on("data", (chunk) => {
-      total += chunk.byteLength;
-      if (total > maxBytes) {
-        stream.destroy(
-          new Error("Offline documentation artifact exceeds the hashing bound"),
-        );
-        return;
-      }
-      hash.update(chunk);
-    });
-    stream.on("error", reject);
-    stream.on("close", () => clearTimeout(timer));
-    stream.on("end", resolve);
-  });
-  return hash.digest("hex");
-}
-
 /**
  * Searches before reading. MCP execution is injected because the hook must use
  * the host's exact, approved MCP contract rather than guess a tool name.
@@ -1158,11 +889,6 @@ export async function resolveDocumentationQuery({
       });
     }
   }
-  if (sources.zimPath) {
-    throw new Error(
-      "QAAS_DOCS_ZIM_PATH identifies an artifact but is not a documentation reader; configure an approved OpenZIM/WikiAll MCP with QAAS_DOCS_MCP_URL",
-    );
-  }
   if (failures.length > 0) {
     throw new Error(
       `Configured QaaS documentation sources were unavailable: ${failures
@@ -1170,9 +896,5 @@ export async function resolveDocumentationQuery({
         .join(", ")}`,
     );
   }
-  throw new Error(
-    sources.airgap?.enabled
-      ? "No configured air-gapped QaaS documentation source is available; public fallback is disabled"
-      : "The built-in QaaS documentation source is unavailable.",
-  );
+  throw new Error("The built-in QaaS documentation source is unavailable.");
 }

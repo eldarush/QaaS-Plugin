@@ -4,8 +4,8 @@ No package version is current merely because it appears in this plugin, model me
 
 Current QaaS documentation uses the attested source order: a proven WikiAll MCP
 pair, `QAAS_DOCS_HELM_URL`, `QAAS_DOCS_WIKIALL_URL`, then the public
-`https://docs.qaas.online/` fallback unless `QAAS_DOCS_AIRGAP=true`. A raw ZIM
-is identity evidence only and requires the approved OpenZIM/WikiAll MCP reader.
+`https://docs.qaas.online/` fallback. The WikiAll selector supplies both its
+optional Streamable HTTP MCP endpoint and its HTTP mirror.
 QaaS Artifactory reads use the exact project-relevant organization base URL in
 one reviewed request; no generic public Artifactory endpoint exists. Every
 source is contacted only by an explicit focused query.
