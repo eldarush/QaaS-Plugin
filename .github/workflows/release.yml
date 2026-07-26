@@ -163,9 +163,22 @@ jobs:
           test "${object_type}" = "commit"
           test "${object_sha}" = "${RELEASE_COMMIT}"
 
-          if ! release_json="$(
-            gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" 2>/dev/null
-          )"; then
+          release_list="$(
+            gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100"
+          )"
+          release_json="$(
+            RELEASE_LIST="${release_list}" RELEASE_TAG="${RELEASE_TAG}" node -e '
+              const matches = JSON.parse(process.env.RELEASE_LIST)
+                .filter((release) => release.tag_name === process.env.RELEASE_TAG);
+              if (matches.length > 1) {
+                throw new Error("Multiple releases use the requested tag.");
+              }
+              if (matches.length === 1) {
+                process.stdout.write(JSON.stringify(matches[0]));
+              }
+            '
+          )"
+          if [[ -z "${release_json}" ]]; then
             gh release create "${RELEASE_TAG}" \
               --repo "${GITHUB_REPOSITORY}" \
               --verify-tag \
@@ -174,7 +187,8 @@ jobs:
               --title "QaaS Plugin ${RELEASE_TAG}" \
               --notes "Validated QaaS Claude Code plugin release."
             release_json="$(
-              gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}"
+              gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+                --jq ".[] | select(.tag_name == \"${RELEASE_TAG}\")"
             )"
           fi
 
